@@ -1,6 +1,6 @@
---[[ Huntersaken Main 2.6 — Trimmed + Auto Aim ]]
-if _G._HS26 then return end
-_G._HS26=true
+--[[ Huntersaken Main 2.7 — Max Speed Auto Block ]]
+if _G._HS27 then return end
+_G._HS27=true
 repeat task.wait() until game:IsLoaded()
 if not buffer then warn("[HS] buffer unavailable") return end
 local Players=game:GetService("Players")
@@ -13,9 +13,11 @@ local Lighting=game:GetService("Lighting")
 local LocalPlayer=Players.LocalPlayer
 local PlayerGui=LocalPlayer:WaitForChild("PlayerGui")
 local hookfunction=hookfunction or (syn and syn.hookfunction)
+local firesignal=firesignal or (syn and syn.firesignal)
 local fireproximitypromptFn=fireproximityprompt or (syn and syn.fireproximityprompt)
+
 local S={
-    AutoBlock=false,BlockMode="Normal",BlockRange=18,FacingDot=0.3,WallCheck=false,
+    AutoBlock=false,BlockMode="Normal",BlockRange=18,FacingDot=0.3,WallCheck=false,BlockStrictCheck=false,
     ShowBlockCone=false,ShowRangeCircle=false,
     AimMethod="HumanoidRoot Lock",AimHold=0.35,AimPrediction=0.06,AimSmoothness=0.35,AimOnBlock=false,
     ParryEnabled=false,PunchDelay=0.0,
@@ -63,7 +65,7 @@ for _,id in ipairs({
 }) do SOUND_DB[id]=true end
 local ANIM_DB={}
 for _,id in ipairs({
-"114506382930939","127245564598429","99829427721752","138938529389204","111647315359080",
+"114506382930939","127245564598429","99827721752","138938529389204","111647315359080",
 "92567970681901","124269076578545","94958041603347","109667959938617","130958529065375",
 "118298475669935","126830014841198","126355327951215","121086746534252","18885909645",
 "98456918873918","105458270463374","83829782357897","125403313786645","82113744478546",
@@ -104,15 +106,29 @@ local function buildAbilityBuffer(name)
     for i=1,len do buffer.writeu8(b,4+i,string.byte(name,i)) end
     return b
 end
+-- Block buffer pre-built (never changes)
+local blockBuffer=nil
+task.spawn(function()
+    blockBuffer=buildAbilityBuffer("Block")
+end)
 local function fireBlockRaw()
-    local re=getRemote();if not re then return false end
-    return (pcall(function() re:FireServer("UseActorAbility",{buildAbilityBuffer("Block")}) end))
+    local re=getRemote(); if not re or not blockBuffer then return false end
+    return (pcall(function() re:FireServer("UseActorAbility",{blockBuffer}) end))
+end
+local function fireBlockFiresignal()
+    if not firesignal then return false end
+    local main=PlayerGui:FindFirstChild("MainUI")
+    local ab=main and main:FindFirstChild("AbilityContainer")
+    local blk=ab and ab:FindFirstChild("Block")
+    if not blk then return false end
+    return (pcall(firesignal,blk.MouseButton1Click))
 end
 local function firePunch()
     local re=getRemote();if not re then return false end
+    local pb=buildAbilityBuffer("Punch")
     local ok=false
     for i=1,2 do
-        if pcall(function() re:FireServer("UseActorAbility",{buildAbilityBuffer("Punch")}) end) then ok=true end
+        if pcall(function() re:FireServer("UseActorAbility",{pb}) end) then ok=true end
         if i<2 then task.wait(0.03) end
     end
     return ok
@@ -192,12 +208,14 @@ local function hasLineOfSight(targetHRP)
     rayParams.FilterDescendantsInstances=rayExcl
     return Workspace:Raycast(myRoot.Position,d,rayParams)==nil
 end
+-- ============ SPEED: cached cooldown + cached block button ============
 local cachedCooldown
+local cachedBlockBtn
 local function refreshCooldownRef()
     local main=PlayerGui:FindFirstChild("MainUI")
     local ab=main and main:FindFirstChild("AbilityContainer")
-    local btn=ab and ab:FindFirstChild("Block")
-    cachedCooldown=btn and btn:FindFirstChild("CooldownTime")
+    cachedBlockBtn=ab and ab:FindFirstChild("Block")
+    cachedCooldown=cachedBlockBtn and cachedBlockBtn:FindFirstChild("CooldownTime")
 end
 task.spawn(function() while true do pcall(refreshCooldownRef); task.wait(2) end end)
 local function blockReady()
@@ -308,13 +326,9 @@ local function startHDT(targetModelOrHRP)
         if hdtActive then stopHDT("cap") end
     end)
 end
-local function fireBlock(targetHRP)
-    local ok=fireBlockRaw()
-    if ok and S.HDT_Enabled and targetHRP then task.defer(function() startHDT(targetHRP) end) end
-    return ok
-end
+-- ============ SPEED: minimal tryBlock ============
 local lastBlockTime,lastParry=0,0
-local BLOCK_COOLDOWN=0.15
+local BLOCK_COOLDOWN=0.02  -- was 0.15
 local soundThrottle={}
 local function tryBlock(killerModel,killerHRP,reason,soundKey)
     if not S.AutoBlock then return false end
@@ -322,22 +336,31 @@ local function tryBlock(killerModel,killerHRP,reason,soundKey)
     local now=os.clock()
     if now-lastBlockTime<BLOCK_COOLDOWN then return false end
     if soundKey and soundThrottle[soundKey] and now<soundThrottle[soundKey] then return false end
-    local our=getRoot(LocalPlayer.Character); if not our then return false end
-    if not blockReady() then return false end
+    local our=getMyHRP(); if not our then return false end
     local dist=(our.Position-killerHRP.Position).Magnitude
     local effRange=S.BlockRange
     if S.HDT_Enabled and S.HDT_ExtendBlockRange then effRange=S.BlockRange+(S.HDT_MaxDistance or 15) end
     if dist>effRange then return false end
-    if not isFacing(our,killerHRP) then return false end
-    if not hasLineOfSight(killerHRP) then return false end
+    -- Strict checks are opt-in (they cost ~5-15ms)
+    if S.BlockStrictCheck then
+        local ourRoot=getRoot(LocalPlayer.Character)
+        if ourRoot and not isFacing(ourRoot,killerHRP) then return false end
+        if not hasLineOfSight(killerHRP) then return false end
+    end
     lastBlockTime=now
-    if soundKey then soundThrottle[soundKey]=now+0.5 end
+    if soundKey then soundThrottle[soundKey]=now+0.25 end
+    -- Aim pre-fire (rotate before block)
     if S.AimOnBlock then
         local predicted=killerHRP.Position+killerHRP.AssemblyLinearVelocity*(S.AimPrediction or 0.06)
         aimAt(predicted)
     end
-    local ok=fireBlock(killerHRP)
-    if ok and S.ParryEnabled then
+    -- FAST: direct remote first (skips UI), firesignal as fallback
+    local fired=fireBlockRaw()
+    if not fired then fired=fireBlockFiresignal() end
+    -- HDT
+    if fired and S.HDT_Enabled then task.defer(function() startHDT(killerHRP) end) end
+    -- Parry
+    if fired and S.ParryEnabled then
         task.spawn(function()
             task.wait(0.06)
             if not blockReady() then
@@ -348,7 +371,7 @@ local function tryBlock(killerModel,killerHRP,reason,soundKey)
             end
         end)
     end
-    return ok
+    return fired
 end
 task.spawn(function()
     while true do
@@ -357,19 +380,30 @@ task.spawn(function()
         for k,v in pairs(soundThrottle) do if v<now then soundThrottle[k]=nil end end
     end
 end)
-local soundHooks=setmetatable({},{__mode="k"})
-local function extractId(s) return tostring(s.SoundId):match("%d+") end
+-- ============ SPEED: killer lookup cache ============
+local killerCache=setmetatable({},{__mode="k"})
 local function findKillerForInstance(inst)
+    local cached=killerCache[inst]
+    if cached then return cached.Parent and cached end
     local p=inst
     while p and p~=Workspace do
         if p:IsA("Model") then
             local parent=p.Parent
-            if parent and parent.Name=="Killers" then return p end
-            if p:FindFirstChildOfClass("Humanoid") then return p end
+            if parent and parent.Name=="Killers" then
+                killerCache[inst]=p
+                return p
+            end
+            if p:FindFirstChildOfClass("Humanoid") then
+                killerCache[inst]=p
+                return p
+            end
         end
         p=p.Parent
     end
 end
+-- ============ SPEED: fast hooks ============
+local soundHooks=setmetatable({},{__mode="k"})
+local function extractId(s) return tostring(s.SoundId):match("%d+") end
 local function onSoundFired(sound)
     if not S.AutoBlock then return end
     local id=extractId(sound); if not id or not SOUND_DB[id] then return end
@@ -1444,7 +1478,7 @@ local UI_OK,UI=pcall(function()
 end)
 if not UI_OK or type(UI)~="table" or type(UI.CreateWindow)~="function" then warn("[HS] Mini5 failed: "..tostring(UI)); return end
 print("[HS] Mini5 OK")
-local Window=UI.CreateWindow({Name="Huntersaken Main",Description="2.6",Size=620,Version="2.6",Theme="Cursed"})
+local Window=UI.CreateWindow({Name="Huntersaken Main",Description="2.7",Size=620,Version="2.7",Theme="Cursed"})
 local function notify(t,d,dur) pcall(function() Window:Notification({Name=t,Description=d,Duration=dur or 3}) end) end
 local Combat=Window:AddCategory("Combat")
 local Automation=Window:AddCategory("Automation")
@@ -1455,11 +1489,11 @@ local function tA(n,v,cb,desc) return {Name=n,Description=desc,Default=v,Current
 local function sA(n,mn,mx,v,pr,cb,desc) return {Name=n,Description=desc,Min=mn,Max=mx,Default=v,Precision=pr,Decimals=2,Callback=cb} end
 local BT=Combat:AddTab("Block","box")
 BT:AddSection("Auto Block")
-BT:AddToggle(tA("Enable Auto Block",S.AutoBlock,function(v) S.AutoBlock=v end,"Blocks on killer sound/anim"))
-BT:AddDropdown({Name="Block Mode",Options={"Normal"},Default=S.BlockMode,Callback=function(v) S.BlockMode=v end})
+BT:AddToggle(tA("Enable Auto Block",S.AutoBlock,function(v) S.AutoBlock=v end,"Fires on killer sound/anim"))
 BT:AddSlider(sA("Block Range",6,30,S.BlockRange,0.5,function(v) S.BlockRange=v end))
 BT:AddSlider(sA("Facing Dot",-1,1,S.FacingDot,0.05,function(v) S.FacingDot=v end,"0.3 = ~72 deg"))
-BT:AddToggle(tA("Wall Check (LOS)",S.WallCheck,function(v) S.WallCheck=v end,"Skip block through walls"))
+BT:AddToggle(tA("Strict Check (Facing + LOS)",S.BlockStrictCheck,function(v) S.BlockStrictCheck=v end,"OFF = fastest block. ON = safer"))
+BT:AddToggle(tA("Wall Check (LOS)",S.WallCheck,function(v) S.WallCheck=v end,"Extra LOS gate (needs Strict)"))
 BT:AddSection("Visuals")
 BT:AddToggle(tA("Show Range Circle",S.ShowRangeCircle,function(v) S.ShowRangeCircle=v; updateVisualLoop() end))
 BT:AddToggle(tA("Show Facing Cone",S.ShowBlockCone,function(v) S.ShowBlockCone=v; updateVisualLoop() end))
@@ -1515,15 +1549,13 @@ AT:AddSection("Prediction")
 AT:AddDropdown({Name="Predict Mode",Options={"Off","Ping","Velocity","Both"},Default=S.AA_PredictMode,Callback=function(v) S.AA_PredictMode=v end})
 AT:AddSlider(sA("Velocity Lead (s)",0,0.5,S.AA_PredictLead,0.01,function(v) S.AA_PredictLead=v end))
 AT:AddSlider(sA("Ping Mult",0,2,S.AA_PingMult,0.05,function(v) S.AA_PingMult=v end,"Chance gun only"))
-AT:AddSection("Debug")
-AT:AddToggle(tA("Print Anim / Sound Ids",S.AA_Debug,function(v) S.AA_Debug=v end))
 local KT=Combat:AddTab("Killer M1","Aim")
 KT:AddSection("Killer Auto M1 Aim")
 KT:AddToggle(tA("Enable Killer M1 Aim",S.KM1_Enabled,function(v)
     S.KM1_Enabled=v
     if not v and _G._HuntersakenKM1 then _G._HuntersakenKM1.stop() end
 end,"Locks to nearest survivor on each M1"))
-KT:AddSlider(sA("Hold Time (s)",0.1,1.0,S.KM1_HoldTime,0.05,function(v) S.KM1_HoldTime=v end,"Lock duration per M1"))
+KT:AddSlider(sA("Hold Time (s)",0.1,1.0,S.KM1_HoldTime,0.05,function(v) S.KM1_HoldTime=v end))
 KT:AddDropdown({Name="Aim Method",Options={"HumanoidRoot Lock","Camera Lock","HumanoidRoot Lock + Camera Lock"},Default=S.KM1_Method,Callback=function(v) S.KM1_Method=v end})
 KT:AddSlider(sA("Smoothness",0.05,1,S.KM1_Smoothness,0.05,function(v) S.KM1_Smoothness=v end))
 KT:AddSlider(sA("Max Lock Distance",10,200,S.KM1_MaxDist,5,function(v) S.KM1_MaxDist=v end))
@@ -1613,5 +1645,5 @@ task.spawn(function()
         end
     end
 end)
-notify("Huntersaken 2.6","Loaded.",4)
-print("[HS] Loaded — 2.6 with Auto Aim, Jane, Stab")
+notify("Huntersaken 2.7","Loaded. Max-speed block.",4)
+print("[HS] Loaded — 2.7, max-speed auto block")
