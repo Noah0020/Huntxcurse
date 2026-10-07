@@ -1,4 +1,4 @@
---[[ Huntersaken Main 2.7.2 — Max Speed Auto Block (v2.7.3 fixes) ]]
+--[[ Huntersaken Main 2.7.4 — Max Speed Auto Block (Noli Rush fix) ]]
 if _G._HS27 then return end
 _G._HS27=true
 repeat task.wait() until game:IsLoaded()
@@ -19,12 +19,20 @@ local fireproximitypromptFn=fireproximityprompt or (syn and syn.fireproximitypro
 local S={
     AutoBlock=false,BlockMode="Normal",BlockRange=18,FacingDot=0.3,WallCheck=false,BlockStrictCheck=false,
     ShowBlockCone=false,ShowRangeCircle=false,
+    -- ============================================================
+    -- FIX #1: M1-Only Mode — filters out unblockable abilities (Noli Rush etc.)
+    -- ============================================================
+    M1OnlyMode=true,
+    M1Range=8,
+    -- ============================================================
+    -- FIX #2: Parry settings
+    -- ============================================================
+    ParryRange=7,
+    ParryCooldown=0.08,
     AimMethod="HumanoidRoot Lock",AimHold=0.35,AimPrediction=0.06,AimSmoothness=0.35,AimOnBlock=false,
-    ParryEnabled=false,PunchDelay=0.06,
+    ParryEnabled=false,PunchDelay=0.1,
     HDT_Enabled=false,HDT_Speed=10,HDT_StopDist=2,HDT_MaxTime=0.4,HDT_MaxDistance=15,HDT_ExtendBlockRange=false,
-    -- FIX: 27s default was unusable
     HDT_Cooldown=2,
-    -- NEW: Hold Block mode
     BlockHold=false,
     Debug=false,
     KM1_Enabled=false,KM1_HoldTime=0.45,KM1_Method="HumanoidRoot Lock + Camera Lock",
@@ -42,8 +50,20 @@ local S={
     Stab_Enabled=false,Stab_BehindOffset=1.7,Stab_MaxRange=60,Stab_Cooldown=0.5,Stab_FollowDuration=0.5,
     Jane_InstantCrystal=false,Jane_InfiniteHold=false,Jane_CrystalAim=false,Jane_HatchetAim=false,
     Jane_AimMethod="HumanoidRoot Lock + Camera Lock",
-    AA_Enabled=false,AA_Mode="Camera",AA_Smooth=0.35,AA_PredictMode="Both",
-    AA_PredictLead=0.15,AA_PingMult=1.0,AA_Debug=false,
+    -- ============================================================
+    -- FIX #3: Auto Aim rewrite
+    -- ============================================================
+    AA_Enabled=false,
+    AA_TriggerMode="Ability",  -- Ability / Always / Hold / M1 / Ability+M1
+    AA_Mode="Camera",
+    AA_Smooth=0.35,
+    AA_PredictMode="Both",
+    AA_PredictLead=0.15,
+    AA_PingMult=1.0,
+    AA_MaxDistance=200,
+    AA_M1Window=0.4,
+    AA_HoldKey=Enum.KeyCode.E,
+    AA_Debug=false,
 }
 local SOUND_DB={}
 for _,id in ipairs({
@@ -111,9 +131,6 @@ local function buildAbilityBuffer(name)
     return b
 end
 
--- ============================================================
--- FIX #1: Build buffers synchronously (was task.spawn → first-frame race)
--- ============================================================
 local blockBuffer = buildAbilityBuffer("Block")
 local blockArgs = {blockBuffer}
 local punchBuffer = buildAbilityBuffer("Punch")
@@ -129,10 +146,6 @@ local function fireBlockRaw()
     if not re or not blockArgs then return false end
     return (pcall(function() re:FireServer("UseActorAbility",blockArgs) end))
 end
-
--- ============================================================
--- FIX #5: Firesignal fallback catches both MouseButton1Click AND Down
--- ============================================================
 local function fireBlockFiresignal()
     if not firesignal then return false end
     local main=PlayerGui:FindFirstChild("MainUI")
@@ -146,6 +159,9 @@ local function fireBlockFiresignal()
     end
     return ok1
 end
+-- ============================================================
+-- FIX #2: Parry — single fire (was double-fire, punched out of parry window)
+-- ============================================================
 local function firePunch()
     local re=cachedRemote
     if not re or not re.Parent then
@@ -153,12 +169,7 @@ local function firePunch()
         cachedRemote=re
     end
     if not re or not punchArgs then return false end
-    local ok=false
-    for i=1,2 do
-        if pcall(function() re:FireServer("UseActorAbility",punchArgs) end) then ok=true end
-        if i<2 then task.wait(0.03) end
-    end
-    return ok
+    return (pcall(function() re:FireServer("UseActorAbility",punchArgs) end))
 end
 local function getRoot(m) return m and (m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart) end
 local _myCharCache=nil
@@ -334,11 +345,6 @@ local function startHDT(targetModelOrHRP)
     local hum=getMyHum(); local hrp=getMyHRP()
     if not hum or not hrp then return end
     if hum.Health<=0 then return end
-
-    -- ============================================================
-    -- FIX #2: HDT distance gate now respects BlockRange when extended
-    -- (was capped at HDT_MaxDistance=15 while BlockRange=18 → HDT never fired)
-    -- ============================================================
     local dist=(hrp.Position-initialHRP.Position).Magnitude
     local hdtMax = S.HDT_MaxDistance or 15
     if S.HDT_ExtendBlockRange then
@@ -363,7 +369,6 @@ local function startHDT(targetModelOrHRP)
             if hdtConn then hdtConn:Disconnect(); hdtConn=nil end
             return
         end
-        -- FIX #2b: bail if we died mid-drag
         local mh = getMyHum()
         if not mh or mh.Health<=0 then stopHDT("dead") return end
         if not hdtBV or not hdtBV.Parent then stopHDT("bv-gone") return end
@@ -388,7 +393,7 @@ local function startHDT(targetModelOrHRP)
 end
 
 -- ============================================================
--- FIX #4: BLOCK_COOLDOWN 0.02 → 0.05 (0.02 was network-throttled)
+-- FIX #1 + #2: tryBlock with M1-Only mode + fixed Parry
 -- ============================================================
 local lastBlockTime,lastParry=0,0
 local BLOCK_COOLDOWN=0.05
@@ -409,11 +414,26 @@ local function tryBlock(killerModel,killerHRP,soundId)
     end
     local op=our.Position; local kp=killerHRP.Position
     local dx=op.X-kp.X; local dy=op.Y-kp.Y; local dz=op.Z-kp.Z
+    local distSq = dx*dx+dy*dy+dz*dz
+
     local effRange=S.BlockRange
     if S.HDT_Enabled and S.HDT_ExtendBlockRange then
         effRange=effRange+(S.HDT_MaxDistance or 15)
     end
-    if dx*dx+dy*dy+dz*dz>effRange*effRange then return false end
+    if distSq>effRange*effRange then return false end
+
+    -- M1-Only Mode: reject if killer farther than M1 reach
+    if S.M1OnlyMode then
+        local m1r = S.M1Range or 8
+        local v = killerHRP.AssemblyLinearVelocity or Vector3.new()
+        local speed = v.Magnitude
+        local grace = math.clamp(speed * 0.08, 0, 4)
+        local m1rEff = m1r + grace
+        if distSq > m1rEff*m1rEff then
+            return false
+        end
+    end
+
     if S.BlockStrictCheck then
         local ourRoot=getRoot(LocalPlayer.Character)
         if ourRoot and not isFacing(ourRoot,killerHRP) then return false end
@@ -433,15 +453,20 @@ local function tryBlock(killerModel,killerHRP,soundId)
     local fired=fireBlockRaw()
     if not fired then fired=fireBlockFiresignal() end
     if fired and S.HDT_Enabled then task.defer(startHDT,killerHRP) end
+
+    -- FIX #2: Parry with range check + single fire
     if fired and S.ParryEnabled then
         local t=os.clock()
-        if t-lastParry>=0.15 then
-            lastParry=t
-            local delay=S.PunchDelay or 0.06
-            if delay>0 then
-                task.spawn(function() task.wait(delay); firePunch() end)
-            else
-                task.spawn(firePunch)
+        if t-lastParry >= (S.ParryCooldown or 0.08) then
+            local pdx = kp.X-op.X; local pdy = kp.Y-op.Y; local pdz = kp.Z-op.Z
+            local pr = S.ParryRange or 7
+            if pdx*pdx+pdy*pdy+pdz*pdz <= pr*pr then
+                lastParry=t
+                local delay=S.PunchDelay or 0.1
+                task.spawn(function()
+                    if delay>0 then task.wait(delay) end
+                    firePunch()
+                end)
             end
         end
     end
@@ -508,10 +533,7 @@ task.spawn(function()
     end)
 end)
 
--- ============================================================
--- FIX #3: NEW Hold Block — spams Block while killer in range
--- (way more reliable than waiting on sound/anim events)
--- ============================================================
+-- Hold Block spam (respects M1-Only via tryBlock)
 task.spawn(function()
     while true do
         task.wait(0.05)
@@ -810,11 +832,14 @@ LocalPlayer.CharacterAdded:Connect(function(c)
 end)
 _G._HuntersakenKM1={isActive=function() return KM1.Active end,stop=km1StopAim}
 
--- AUTO AIM
+-- ============================================================
+-- FIX #3: AUTO AIM — rewritten with multi-mode triggers
+-- ============================================================
 local AA={
     AbilityAnimIds={},AbilitySoundIds={},
     EventActive=false,EventRefCount=0,CurrentAbility=nil,
     TargetHRP=nil,AnimConn=nil,SoundConns={},
+    ManualHeld=false,
 }
 local AA_WHITELIST_ANIM={Slash=true,AimGun=true,GunFire=true,GunExplode=true,GunFail=true,Stab=true,LungeStart=true,Lunge=true}
 local AA_WHITELIST_SOUND={Slash=true,GunFire=true,GunExplode=true,GunFail=true,Shoot=true,Stab=true,Lunge=true}
@@ -906,23 +931,34 @@ local function aaGetPing()
     if ok and type(v)=="number" then return v end
     return 0
 end
+
+-- Better target selection: prefer close AND centered on screen
 local function aaUpdateTarget()
     local r=getMyHRP(); if not r then AA.TargetHRP=nil; return end
     local f=getKillersFolder(); if not f then AA.TargetHRP=nil; return end
-    local best,bestD=nil,500
+    local cam=Workspace.CurrentCamera
+    local best, bestScore = nil, math.huge
     for _,k in ipairs(f:GetChildren()) do
         if k:IsA("Model") then
             local hrp=k:FindFirstChild("HumanoidRootPart")
             local hum=k:FindFirstChildOfClass("Humanoid")
             if hrp and hum and hum.Health>0 then
                 local d=(hrp.Position-r.Position).Magnitude
-                if d<bestD then bestD=d; best=hrp end
+                if d < (S.AA_MaxDistance or 200) then
+                    local score = d
+                    if cam then
+                        local toT = (hrp.Position - cam.CFrame.Position).Unit
+                        local dot = cam.CFrame.LookVector:Dot(toT)
+                        score = score * (1 + (1 - dot) * 1.5)
+                    end
+                    if score < bestScore then bestScore=score; best=hrp end
+                end
             end
         end
     end
     AA.TargetHRP=best
 end
-task.spawn(function() while true do task.wait(0.1); pcall(aaUpdateTarget) end end)
+task.spawn(function() while true do task.wait(0.08); pcall(aaUpdateTarget) end end)
 local function aaPredict(hrp)
     if not hrp then return nil end
     if S.AA_PredictMode=="Off" then return hrp.Position end
@@ -954,13 +990,55 @@ local function aaApply(tp)
         end
     end
 end
+
+-- M1 window
+local aaM1WindowUntil = 0
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        aaM1WindowUntil = os.clock() + (S.AA_M1Window or 0.4)
+    end
+end)
+
 RunService.RenderStepped:Connect(function()
     if not S.AA_Enabled then return end
-    if not AA.EventActive then return end
     if getMyRole()~="Survivors" then return end
     if not AA.TargetHRP or not AA.TargetHRP.Parent then return end
-    aaApply(aaPredict(AA.TargetHRP))
+
+    local mode = S.AA_TriggerMode or "Ability"
+    local shouldAim = false
+
+    if mode == "Always" then
+        shouldAim = true
+    elseif mode == "Ability" then
+        shouldAim = AA.EventActive
+    elseif mode == "Hold" then
+        shouldAim = AA.ManualHeld
+    elseif mode == "M1" then
+        shouldAim = os.clock() < aaM1WindowUntil
+    elseif mode == "Ability+M1" then
+        shouldAim = AA.EventActive or os.clock() < aaM1WindowUntil
+    end
+
+    if shouldAim then
+        aaApply(aaPredict(AA.TargetHRP))
+    end
 end)
+
+-- Hold key
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == (S.AA_HoldKey or Enum.KeyCode.E) then
+        AA.ManualHeld = true
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == (S.AA_HoldKey or Enum.KeyCode.E) then
+        AA.ManualHeld = false
+    end
+end)
+
 local function aaSetup(char)
     if char~=LocalPlayer.Character then return end
     task.wait(0.5); aaLoadIds(char)
@@ -979,8 +1057,7 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 -- ============================================================
--- FIX #6: Circle visuals — disc + facing ring, respawn-safe,
--- colors sync with actual isFacing result
+-- Circle visuals — disc + facing ring, respawn-safe
 -- ============================================================
 local rangeVisuals,coneVisuals={},{}
 local visualConn=nil
@@ -1592,7 +1669,7 @@ local UI_OK,UI=pcall(function()
 end)
 if not UI_OK or type(UI)~="table" or type(UI.CreateWindow)~="function" then warn("[HS] Mini5 failed: "..tostring(UI)); return end
 print("[HS] Mini5 OK")
-local Window=UI.CreateWindow({Name="Huntersaken Main",Description="2.7.3",Size=620,Version="2.7.3",Theme="Cursed"})
+local Window=UI.CreateWindow({Name="Huntersaken Main",Description="2.7.4",Size=620,Version="2.7.4",Theme="Cursed"})
 local function notify(t,d,dur) pcall(function() Window:Notification({Name=t,Description=d,Duration=dur or 3}) end) end
 local Combat=Window:AddCategory("Combat")
 local Automation=Window:AddCategory("Automation")
@@ -1601,11 +1678,14 @@ local Utility=Window:AddCategory("Utility")
 local Info=Window:AddCategory("Info")
 local function tA(n,v,cb,desc) return {Name=n,Description=desc,Default=v,CurrentValue=v,Callback=cb} end
 local function sA(n,mn,mx,v,pr,cb,desc) return {Name=n,Description=desc,Min=mn,Max=mx,Default=v,Precision=pr,Decimals=2,Callback=cb} end
+
 local BT=Combat:AddTab("Block","box")
 BT:AddSection("Auto Block")
 BT:AddToggle(tA("Enable Auto Block",S.AutoBlock,function(v) S.AutoBlock=v end,"Fires on killer sound/anim"))
--- NEW: Hold Block toggle
-BT:AddToggle(tA("Hold Block (spam)",S.BlockHold,function(v) S.BlockHold=v end,"Continuously fires Block while a killer is in range. Way more reliable than sound/anim only."))
+BT:AddToggle(tA("Hold Block (spam)",S.BlockHold,function(v) S.BlockHold=v end,"Continuously fires Block while a killer is in range"))
+-- NEW: M1-Only mode
+BT:AddToggle(tA("M1-Only Mode",S.M1OnlyMode,function(v) S.M1OnlyMode=v end,"Only blocks when killer is within M1 reach — filters out unblockable abilities like Noli Rush"))
+BT:AddSlider(sA("M1 Reach (studs)",4,14,S.M1Range,0.5,function(v) S.M1Range=v end,"M1s only land within this range. Larger = more permissive."))
 BT:AddSlider(sA("Block Range",6,30,S.BlockRange,0.5,function(v) S.BlockRange=v end))
 BT:AddSlider(sA("Facing Dot",-1,1,S.FacingDot,0.05,function(v) S.FacingDot=v end,"0.3 = ~72 deg"))
 BT:AddToggle(tA("Strict Check (Facing + LOS)",S.BlockStrictCheck,function(v) S.BlockStrictCheck=v end,"OFF = fastest block. ON = safer"))
@@ -1621,7 +1701,10 @@ BT:AddSlider(sA("Aim Prediction (s)",0,0.3,S.AimPrediction,0.01,function(v) S.Ai
 BT:AddSlider(sA("Aim Smoothness",0.02,1,S.AimSmoothness,0.02,function(v) S.AimSmoothness=v end))
 BT:AddSection("Auto Parry")
 BT:AddToggle(tA("Enable Parry",S.ParryEnabled,function(v) S.ParryEnabled=v end,"Auto-punch on block success"))
-BT:AddSlider(sA("Punch Delay (s)",0,0.3,S.PunchDelay,0.01,function(v) S.PunchDelay=v end))
+BT:AddSlider(sA("Punch Delay (s)",0,0.3,S.PunchDelay,0.01,function(v) S.PunchDelay=v end,"Try 0.08-0.12 if parry misses"))
+BT:AddSlider(sA("Parry Range (studs)",4,12,S.ParryRange,0.5,function(v) S.ParryRange=v end,"Only parry if killer within punch range"))
+BT:AddSlider(sA("Parry Cooldown (s)",0.05,0.5,S.ParryCooldown,0.01,function(v) S.ParryCooldown=v end))
+
 local HT=Combat:AddTab("HDT","Run")
 HT:AddSection("Hitbox Drag Tech")
 HT:AddToggle(tA("Enable HDT",S.HDT_Enabled,function(v) S.HDT_Enabled=v; if not v then stopHDT("disabled") end end,"Slides toward killer on block"))
@@ -1631,6 +1714,7 @@ HT:AddSlider(sA("Stop Distance (studs)",0.5,6,S.HDT_StopDist,0.1,function(v) S.H
 HT:AddSlider(sA("Max Duration (s)",0.1,1.5,S.HDT_MaxTime,0.05,function(v) S.HDT_MaxTime=v end))
 HT:AddSlider(sA("Max Distance (studs)",5,30,S.HDT_MaxDistance,0.5,function(v) S.HDT_MaxDistance=v end))
 HT:AddSlider(sA("HDT Cooldown (s)",0,60,S.HDT_Cooldown,1,function(v) S.HDT_Cooldown=v end,"Minimum time between HDT triggers"))
+
 local ST=Combat:AddTab("Stab","Run")
 ST:AddSection("HunterStab")
 ST:AddToggle(tA("Enable HunterStab",S.Stab_Enabled,function(v) S.Stab_Enabled=v end,"Auto-stab on dagger anim. H = manual"))
@@ -1638,6 +1722,7 @@ ST:AddSlider(sA("Behind Offset (studs)",0.5,6,S.Stab_BehindOffset,0.1,function(v
 ST:AddSlider(sA("Max Range (studs)",10,150,S.Stab_MaxRange,1,function(v) S.Stab_MaxRange=v end))
 ST:AddSlider(sA("Cooldown (s)",0.1,2,S.Stab_Cooldown,0.05,function(v) S.Stab_Cooldown=v end))
 ST:AddSlider(sA("Follow Duration (s)",0.1,2,S.Stab_FollowDuration,0.05,function(v) S.Stab_FollowDuration=v end))
+
 local JT=Combat:AddTab("Jane","Run")
 JT:AddSection("Jane Doe")
 JT:AddToggle(tA("Instant Max Charge Crystal",S.Jane_InstantCrystal,function(v)
@@ -1657,15 +1742,28 @@ JT:AddToggle(tA("Hatchet Aimbot",S.Jane_HatchetAim,function(v)
     if _G._HuntersakenJane then _G._HuntersakenJane.installHooks(); _G._HuntersakenJane.applyAim() end
 end))
 JT:AddDropdown({Name="Aim Method",Options={"HumanoidRoot Lock","Camera Lock","HumanoidRoot Lock + Camera Lock"},Default=S.Jane_AimMethod,Callback=function(v) S.Jane_AimMethod=v end})
+
 local AT=Combat:AddTab("Auto Aim","Aim")
 AT:AddSection("Survivor Auto Aim")
-AT:AddToggle(tA("Enable Auto Aim",S.AA_Enabled,function(v) S.AA_Enabled=v end,"Aims on Shed/Chance/TwoTime abilities"))
+AT:AddToggle(tA("Enable Auto Aim",S.AA_Enabled,function(v) S.AA_Enabled=v end))
+AT:AddDropdown({Name="Trigger Mode",
+    Options={"Ability","Always","Hold","M1","Ability+M1"},
+    Default=S.AA_TriggerMode,
+    Callback=function(v) S.AA_TriggerMode=v end})
+-- = "Ability"   aims only when your ability animation plays
+-- = "Always"    always aims at nearest killer (best for testing)
+-- = "Hold"      aims while holding E key
+-- = "M1"        aims briefly when you click
+-- = "Ability+M1" combo
 AT:AddDropdown({Name="Aim Mode",Options={"Camera","HRP","HRP + Camera"},Default=S.AA_Mode,Callback=function(v) S.AA_Mode=(v=="HRP + Camera") and "HRP+Camera" or v end})
 AT:AddSlider(sA("Smoothness",0.05,1,S.AA_Smooth,0.05,function(v) S.AA_Smooth=v end))
+AT:AddSlider(sA("Max Distance (studs)",30,500,S.AA_MaxDistance,10,function(v) S.AA_MaxDistance=v end))
+AT:AddSlider(sA("M1 Aim Window (s)",0.1,1.0,S.AA_M1Window,0.05,function(v) S.AA_M1Window=v end,"How long after clicking to keep aiming (M1 mode)"))
 AT:AddSection("Prediction")
 AT:AddDropdown({Name="Predict Mode",Options={"Off","Ping","Velocity","Both"},Default=S.AA_PredictMode,Callback=function(v) S.AA_PredictMode=v end})
 AT:AddSlider(sA("Velocity Lead (s)",0,0.5,S.AA_PredictLead,0.01,function(v) S.AA_PredictLead=v end))
 AT:AddSlider(sA("Ping Mult",0,2,S.AA_PingMult,0.05,function(v) S.AA_PingMult=v end,"Chance gun only"))
+
 local KT=Combat:AddTab("Killer M1","Aim")
 KT:AddSection("Killer Auto M1 Aim")
 KT:AddToggle(tA("Enable Killer M1 Aim",S.KM1_Enabled,function(v)
@@ -1677,6 +1775,7 @@ KT:AddDropdown({Name="Aim Method",Options={"HumanoidRoot Lock","Camera Lock","Hu
 KT:AddSlider(sA("Smoothness",0.05,1,S.KM1_Smoothness,0.05,function(v) S.KM1_Smoothness=v end))
 KT:AddSlider(sA("Max Lock Distance",10,200,S.KM1_MaxDist,5,function(v) S.KM1_MaxDist=v end))
 KT:AddToggle(tA("Require Facing",S.KM1_RequireFacing,function(v) S.KM1_RequireFacing=v end))
+
 local GT=Automation:AddTab("Generator","Run")
 GT:AddSection("Auto Generator")
 GT:AddToggle(tA("Auto Generator(s)",S.AutoGen,function(v) S.AutoGen=v end,"6.7 studs + Puzzle UI open"))
@@ -1695,6 +1794,7 @@ DT:AddToggle(tA("Auto Disarm Traps",S.AutoDisarm,function(v)
     S.AutoDisarm=v
     if v and _G._HuntersakenAzureDisarm then _G._HuntersakenAzureDisarm(true) end
 end,"Instantly disarms Azure traps"))
+
 local EPT=Visuals:AddTab("ESP","box")
 EPT:AddSection("Master")
 EPT:AddToggle(tA("Enable ESP",S.ESP_Enabled,function(v) S.ESP_Enabled=v; if not v then clearAllESP() end end))
@@ -1712,6 +1812,7 @@ EPT:AddColorPicker({Name="Killer Color",Default=S.ESP_KillerColor,Callback=funct
 EPT:AddColorPicker({Name="Survivor Color",Default=S.ESP_SurvivorColor,Callback=function(c) S.ESP_SurvivorColor=c end})
 EPT:AddColorPicker({Name="Generator Color",Default=S.ESP_GeneratorColor,Callback=function(c) S.ESP_GeneratorColor=c end})
 EPT:AddColorPicker({Name="Item Color",Default=S.ESP_ItemColor,Callback=function(c) S.ESP_ItemColor=c end})
+
 local OT=Visuals:AddTab("Objects","box")
 OT:AddSection("NPCs")
 OT:AddToggle(tA("Hide Noli's NPC",S.HideNoliNPC,function(v) S.HideNoliNPC=v end))
@@ -1722,6 +1823,7 @@ OT:AddToggle(tA("Disable John Doe's Footprints",S.DisableFootprints,function(v) 
 OT:AddToggle(tA("Smaller Spike Collisions",S.SmallerSpikes,function(v) S.SmallerSpikes=v end))
 OT:AddSection("Performance")
 OT:AddToggle(tA("Delete All Ragdolls",S.DeleteRagdolls,function(v) S.DeleteRagdolls=v end))
+
 local HT2=Visuals:AddTab("HUD","box")
 HT2:AddSection("Interface")
 HT2:AddToggle(tA("Hide Injured UI / Vignette",S.HideInjuredUI,function(v) S.HideInjuredUI=v end))
@@ -1730,10 +1832,12 @@ HT2:AddToggle(tA("Show Chat",S.ShowChat,function(v) S.ShowChat=v end))
 HT2:AddSection("Camera")
 HT2:AddSlider(sA("Extended FOV (70 = default)",50,120,S.ExtFOV,5,function(v) S.ExtFOV=v end))
 HT2:AddSlider(sA("Extended Zoom Distance",0,100,S.ExtZoom,5,function(v) S.ExtZoom=v end))
+
 local STM=Utility:AddTab("Stamina","Run")
 STM:AddSection("Stamina Preset")
 STM:AddDropdown({Name="Preset",Options={"Original","Realistic","Semi-Realistic","Infinite"},Default=S.StamPreset,
     Callback=function(v) S.StamPreset=v; notify("Stamina","Preset: "..v,3) end})
+
 local MT=Utility:AddTab("Movement","Run")
 MT:AddSection("Jumping")
 MT:AddToggle(tA("Enable Jumping",S.EnableJumping,function(v)
@@ -1746,13 +1850,16 @@ MT:AddToggle(tA("Better Void Rush (Noli)",S.NoliControl,function(v)
     if _G._HuntersakenNoliControl then _G._HuntersakenNoliControl() end
 end,"Higher turn speed during Void Rush"))
 MT:AddToggle(tA("Coolkidd Controllable Dash",S.CoolkiddDash,function(v) S.CoolkiddDash=v end))
+
 local ANT=Utility:AddTab("Anti","Block")
 ANT:AddSection("Slowness")
 ANT:AddToggle(tA("Anti Slowness",S.AntiSlowness,function(v) S.AntiSlowness=v end,"Removes slowness statuses"))
 ANT:AddSection("Map")
 ANT:AddToggle(tA("Disable Killer Walls",S.DisableKillerWalls,function(v) S.DisableKillerWalls=v end,"Walk through killer-only walls"))
+
 local DBT=Info:AddTab("Debug","Settings")
 DBT:AddToggle(tA("Console Debug Prints",S.Debug,function(v) S.Debug=v end))
+
 task.spawn(function()
     while true do
         task.wait(1.5)
@@ -1762,5 +1869,5 @@ task.spawn(function()
         end
     end
 end)
-notify("Huntersaken 2.7.3","Loaded. Block + HDT fixed. Hold Block added.",4)
-print("[HS] Loaded — 2.7.3")
+notify("Huntersaken 2.7.4","Block M1-only + Parry + Auto Aim fixed.",4)
+print("[HS] Loaded — 2.7.4")
