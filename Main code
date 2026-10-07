@@ -84,14 +84,19 @@ local RAY_LOS = RaycastParams.new()
 RAY_LOS.FilterType = Enum.RaycastFilterType.Exclude
 RAY_LOS.IgnoreWater = true
 
+local _losFilter = {}
 local function losTo(targetPos, ignoreModel)
     local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
     if not myRoot then return true end
     local delta = targetPos - myRoot.Position
     if delta.Magnitude < 0.001 then return true end
-    local ignore = { lp.Character }
-    if ignoreModel then ignore[#ignore + 1] = ignoreModel end
-    RAY_LOS.FilterDescendantsInstances = ignore
+    _losFilter[1] = lp.Character
+    if ignoreModel then
+        _losFilter[2] = ignoreModel
+    else
+        _losFilter[2] = nil
+    end
+    RAY_LOS.FilterDescendantsInstances = _losFilter
     return workspace:Raycast(myRoot.Position, delta, RAY_LOS) == nil
 end
 
@@ -115,8 +120,6 @@ local function facingDotClamped()
 end
 
 -- True when the LOCAL PLAYER is inside the killer's forward "view box".
--- Uses the exact same dimensions the box visual draws with, so the box
--- on screen literally IS the auto-block zone.
 local function isClientInKillerBox(killerRoot)
     if not killerRoot then return false end
     local myRoot = getMyRoot()
@@ -154,7 +157,6 @@ local function isClientInKillerBox(killerRoot)
     return true
 end
 
--- inRange + "client is inside the killer's box" state (box visual uses this too)
 local function getFacingState(killerRoot)
     local myRoot = getMyRoot()
     if not myRoot or not killerRoot then return false, false end
@@ -171,7 +173,6 @@ local function inRange(killerRoot)
     return (killerRoot.Position - myRoot.Position).Magnitude <= CFG.DetectionRange
 end
 
--- Auto block gate: WE must be inside the killer's box
 local function shouldBlock(killerRoot)
     if not killerRoot or not killerRoot.Parent then return false end
     if not isClientInKillerBox(killerRoot) then return false end
@@ -365,13 +366,15 @@ if KillersFolder then
 end
 
 -- =========================================================
--- HDT (pure CFrame stepping)
+-- HDT (pure CFrame stepping, one-shot per trigger)
 -- =========================================================
 HDT = {
     Enabled = false, AutoTrigger = true, Speed = 10, Delay = 0,
     StopDistance = 2, SafetyTimeout = 1.5,
+    ReTriggerCooldown = 1.0,
     _dragId = 0, _dragging = false, _conn = nil, _saved = nil,
     _lastFire = 0, _fireDebounce = 0.15,
+    _cooldownUntil = 0,
 }
 
 local function startDrag(targetPart)
@@ -381,6 +384,9 @@ local function startDrag(targetPart)
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not humanoid then return end
+
+    local startDist = (targetPart.Position - hrp.Position).Magnitude
+    if startDist <= HDT.StopDistance + 0.5 then return end
 
     HDT._dragId += 1
     local myId = HDT._dragId
@@ -396,10 +402,18 @@ local function startDrag(targetPart)
     humanoid.WalkSpeed = 0
     humanoid.AutoRotate = false
 
+    local finished = false
     local function cleanup()
+        if finished then return end
+        finished = true
         if HDT._dragId ~= myId then return end
         HDT._dragging = false
+        HDT._cooldownUntil = tick() + (HDT.ReTriggerCooldown or 1.0)
         if HDT._conn then HDT._conn:Disconnect() HDT._conn = nil end
+        if hrp and hrp.Parent then
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end
         if humanoid and humanoid.Parent then
             humanoid.WalkSpeed = saved.walk
             humanoid.JumpPower = saved.jump
@@ -409,27 +423,29 @@ local function startDrag(targetPart)
     end
 
     HDT._conn = RunService.Heartbeat:Connect(function(dt)
-        if HDT._dragId ~= myId then
-            if HDT._conn then HDT._conn:Disconnect() HDT._conn = nil end
-            return
+        if HDT._dragId ~= myId or not HDT._dragging then
+            cleanup(); return
         end
         if not (char and char.Parent and targetPart and targetPart.Parent) then
             cleanup(); return
         end
+
         local myPos = hrp.Position
         local tgtPos = targetPart.Position
         local flat = Vector3.new(tgtPos.X, myPos.Y, tgtPos.Z)
         local delta = flat - myPos
         local dist = delta.Magnitude
+
         if dist <= HDT.StopDistance then cleanup(); return end
+
         local maxStep = HDT.Speed * dt
         local step = math.min(maxStep, dist - HDT.StopDistance)
-        if step > 0 then
-            local newPos = myPos + delta.Unit * step
-            hrp.CFrame = CFrame.lookAt(newPos, flat)
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-        end
+        if step <= 0 then cleanup(); return end
+
+        local newPos = myPos + delta.Unit * step
+        hrp.CFrame = CFrame.lookAt(newPos, flat)
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
     end)
 
     task.delay(HDT.SafetyTimeout, function()
@@ -439,11 +455,20 @@ end
 
 function HDT.TriggerFromAutoBlock()
     if not HDT.Enabled then return end
+    if tick() < (HDT._cooldownUntil or 0) then return end
     if tick() - HDT._lastFire < HDT._fireDebounce then return end
     if HDT._dragging then return end
     HDT._lastFire = tick()
+
     local target = nearestKillerPart()
     if not target then return end
+
+    local myRoot = getMyRoot()
+    if myRoot then
+        local d = (target.Position - myRoot.Position).Magnitude
+        if d <= HDT.StopDistance + 0.5 then return end
+    end
+
     if HDT.Delay > 0 then
         task.delay(HDT.Delay, function() startDrag(target) end)
     else
@@ -455,6 +480,7 @@ HDT.Trigger = HDT.TriggerFromAutoBlock
 lp.CharacterAdded:Connect(function()
     HDT._dragId += 1
     HDT._dragging = false
+    HDT._cooldownUntil = 0
     if HDT._conn then HDT._conn:Disconnect() HDT._conn = nil end
     HDT._saved = nil
 end)
@@ -520,7 +546,7 @@ end
 
 task.spawn(function()
     while true do
-        task.wait(0.05)
+        task.wait(0.1)
         pcall(updateCachedTarget)
     end
 end)
@@ -633,7 +659,7 @@ AbilityHook = {
     },
 
     LockMultiplier = 1.0,
-    Cooldown       = 1.0,     -- min seconds between aim triggers (1-60)
+    Cooldown       = 1.0,
     _lastFire      = 0,
 
     Hooked   = {},
@@ -790,7 +816,7 @@ end)
 
 task.spawn(function()
     while true do
-        task.wait(1.0)
+        task.wait(1.5)
         ahScanContainer()
     end
 end)
@@ -1582,7 +1608,7 @@ end
 
 task.spawn(function()
     while true do
-        task.wait()
+        RunService.Heartbeat:Wait()
         if not FacingVisual.BoxEnabled then continue end
         if not KillersFolder then continue end
 
@@ -1619,11 +1645,19 @@ end
 -- UI (WindUI)
 -- =========================================================
 
-local HUNTER_ICON = "rbxassetid://10709797008"
+local ICON_WINDOW    = "rbxassetid://10709790644"  -- sword / weapon
+local ICON_ESP       = "rbxassetid://6031075931"   -- eye
+local ICON_STAM      = "rbxassetid://10709797008"  -- generic
+local ICON_AUTOBLOCK = "rbxassetid://6031075927"   -- shield
+local ICON_HDT       = "rbxassetid://10709791806"  -- wrench
+local ICON_AIM       = "rbxassetid://10709794992"  -- crosshair / weapon
+local ICON_BOX       = "rbxassetid://10709797008"  -- generic
+local ICON_STAB      = "rbxassetid://10709790644"  -- sword
+local ICON_MISC      = "rbxassetid://10709791806"  -- wrench / tool
 
 local Window = WindUI:CreateWindow({
     Title = "hunter",
-    Icon = HUNTER_ICON,
+    Icon = ICON_WINDOW,
     Author = "gg",
     Folder = "hunter",
     Size = UDim2.fromOffset(580, 460),
@@ -1641,7 +1675,7 @@ local function firstOpt(opt, default)
 end
 
 -- esp
-local ESPTab = Window:Tab({ Title = "esp", Icon = HUNTER_ICON })
+local ESPTab = Window:Tab({ Title = "esp", Icon = ICON_ESP })
 ESPTab:Section({ Title = "players" })
 ESPTab:Toggle({
     Title = "killer", Value = false, Flag = "ESP_Killers",
@@ -1662,7 +1696,7 @@ ESPTab:Toggle({
 })
 
 -- stam
-local StamTab = Window:Tab({ Title = "stam", Icon = HUNTER_ICON })
+local StamTab = Window:Tab({ Title = "stam", Icon = ICON_STAM })
 StamTab:Section({ Title = "sprint" })
 if not Sprinting then
     StamTab:Paragraph({ Title = "n/a", Desc = "no sprinting module" })
@@ -1690,7 +1724,7 @@ else
 end
 
 -- auto block
-local ABTab = Window:Tab({ Title = "auto block", Icon = HUNTER_ICON })
+local ABTab = Window:Tab({ Title = "auto block", Icon = ICON_AUTOBLOCK })
 ABTab:Toggle({
     Title = "on", Value = false, Flag = "AutoBlock",
     Callback = function(v) CFG.AutoBlockEnabled = v end,
@@ -1731,7 +1765,7 @@ ABTab:Slider({
 })
 
 -- hdt
-local HDTTab = Window:Tab({ Title = "hdt", Icon = HUNTER_ICON })
+local HDTTab = Window:Tab({ Title = "hdt", Icon = ICON_HDT })
 HDTTab:Toggle({
     Title = "on", Value = false, Flag = "HDT_On",
     Callback = function(v) HDT.Enabled = v end,
@@ -1756,13 +1790,17 @@ HDTTab:Slider({
     Title = "max drag time", Value = { Min = 0.2, Max = 3, Default = HDT.SafetyTimeout, Rounding = 2 }, Flag = "HDT_Timeout",
     Callback = function(v) HDT.SafetyTimeout = v end,
 })
+HDTTab:Slider({
+    Title = "re-trigger cd", Value = { Min = 0, Max = 5, Default = HDT.ReTriggerCooldown, Rounding = 2 }, Flag = "HDT_ReCD",
+    Callback = function(v) HDT.ReTriggerCooldown = v end,
+})
 HDTTab:Keybind({
     Title = "manual", Value = Enum.KeyCode.Q,
     Callback = function() HDT.Trigger() end,
 })
 
 -- aim
-local AimTab = Window:Tab({ Title = "aim", Icon = HUNTER_ICON })
+local AimTab = Window:Tab({ Title = "aim", Icon = ICON_AIM })
 
 AimTab:Section({ Title = "main" })
 AimTab:Toggle({
@@ -1835,7 +1873,7 @@ AimTab:Slider({
 })
 
 -- box
-local BoxTab = Window:Tab({ Title = "box", Icon = HUNTER_ICON })
+local BoxTab = Window:Tab({ Title = "box", Icon = ICON_BOX })
 BoxTab:Section({ Title = "box check" })
 BoxTab:Toggle({
     Title = "on", Value = false, Flag = "FV_Box",
@@ -1928,7 +1966,7 @@ BoxTab:Button({
 })
 
 -- stab
-local StabTab = Window:Tab({ Title = "stab", Icon = HUNTER_ICON })
+local StabTab = Window:Tab({ Title = "stab", Icon = ICON_STAB })
 StabTab:Toggle({
     Title = "on", Value = false, Flag = "Stab_On",
     Callback = function(v) STAB.Enabled = v end,
@@ -1963,7 +2001,7 @@ StabTab:Button({
 })
 
 -- misc
-local MiscTab = Window:Tab({ Title = "misc", Icon = HUNTER_ICON })
+local MiscTab = Window:Tab({ Title = "misc", Icon = ICON_MISC })
 
 MiscTab:Section({ Title = "theme" })
 MiscTab:Dropdown({
