@@ -42,7 +42,7 @@ local BLOCK_BUF = buildBuffer("Block")
 local PUNCH_BUF = buildBuffer("Punch")
 
 local lastBlockFire = 0
-local BLOCK_COOLDOWN = 0.55
+local BLOCK_COOLDOWN = 0.05   -- as fast as possible
 
 local HDT, AIM, AbilityHook, AUTOGEN, STAB, AZ, HBE, FacingVisual
 
@@ -53,6 +53,9 @@ local function fireBlock()
     RemoteEvent:FireServer("UseActorAbility", { BLOCK_BUF })
     if FacingVisual then
         FacingVisual._blockPulse = (FacingVisual._blockPulse or 0) + 1
+    end
+    if HDT and HDT.Enabled and HDT.AutoTrigger then
+        pcall(function() HDT.TriggerFromAutoBlock() end)
     end
     return true
 end
@@ -70,8 +73,8 @@ local CFG = {
     FacingDot        = 0.25,
     SoundTrigger     = true,
     AnimTrigger      = true,
-    ESPSurvivors     = false,
     ESPKillers       = false,
+    ESPSurvivors     = false,
     ESPGenerators    = false,
     ESPItems         = false,
     InfiniteStamina  = false,
@@ -107,13 +110,59 @@ local function hasLOS(killerRoot)
     return losTo(killerRoot.Position, killerRoot:FindFirstAncestorOfClass("Model"))
 end
 
-local function isFacing(killerRoot)
-    if not CFG.FacingCheck then return true end
+local function facingDotClamped()
+    return math.clamp(CFG.FacingDot or 0.25, -1, 1)
+end
+
+-- True when the LOCAL PLAYER is inside the killer's forward "view box".
+-- Uses the exact same dimensions the box visual draws with, so the box
+-- on screen literally IS the auto-block zone.
+local function isClientInKillerBox(killerRoot)
+    if not killerRoot then return false end
     local myRoot = getMyRoot()
-    if not myRoot or not killerRoot then return true end
+    if not myRoot then return false end
+
     local delta = myRoot.Position - killerRoot.Position
-    if delta.Magnitude < 0.001 then return true end
-    return killerRoot.CFrame.LookVector:Dot(delta.Unit) > CFG.FacingDot
+    local dist = delta.Magnitude
+    if dist > CFG.DetectionRange then return false end
+    if dist < 0.001 then return true end
+
+    local look = killerRoot.CFrame.LookVector
+    local flatLook = Vector3.new(look.X, 0, look.Z)
+    if flatLook.Magnitude < 1e-4 then return false end
+    flatLook = flatLook.Unit
+    local flatRight = Vector3.new(flatLook.Z, 0, -flatLook.X)
+
+    local flatDelta = Vector3.new(delta.X, 0, delta.Z)
+    local forwardDist = flatDelta:Dot(flatLook)
+    local lateralDist = math.abs(flatDelta:Dot(flatRight))
+
+    local length = (FacingVisual and FacingVisual.BoxLength) or 15
+    local width
+    if FacingVisual and FacingVisual.AutoWidth then
+        local dot = facingDotClamped()
+        local halfAngle = math.acos(dot)
+        halfAngle = math.min(halfAngle, math.rad((FacingVisual and FacingVisual.BoxMaxAngle) or 75))
+        width = math.min(2 * length * math.tan(halfAngle), length * 3)
+    else
+        width = (FacingVisual and FacingVisual.BoxWidth) or 6
+    end
+
+    if forwardDist < 0 then return false end
+    if forwardDist > length then return false end
+    if lateralDist > width * 0.5 then return false end
+    return true
+end
+
+-- inRange + "client is inside the killer's box" state (box visual uses this too)
+local function getFacingState(killerRoot)
+    local myRoot = getMyRoot()
+    if not myRoot or not killerRoot then return false, false end
+    local dist = (myRoot.Position - killerRoot.Position).Magnitude
+    local ir = dist <= CFG.DetectionRange
+    local fp = isClientInKillerBox(killerRoot)
+    if not CFG.FacingCheck then fp = true end
+    return ir, fp
 end
 
 local function inRange(killerRoot)
@@ -122,9 +171,12 @@ local function inRange(killerRoot)
     return (killerRoot.Position - myRoot.Position).Magnitude <= CFG.DetectionRange
 end
 
+-- Auto block gate: WE must be inside the killer's box
 local function shouldBlock(killerRoot)
     if not killerRoot or not killerRoot.Parent then return false end
-    return inRange(killerRoot) and hasLOS(killerRoot) and isFacing(killerRoot)
+    if not isClientInKillerBox(killerRoot) then return false end
+    if not hasLOS(killerRoot) then return false end
+    return true
 end
 
 local function extractSoundId(sound)
@@ -312,17 +364,14 @@ if KillersFolder then
     KillersFolder.ChildAdded:Connect(hookKiller)
 end
 
+-- =========================================================
+-- HDT (pure CFrame stepping)
+-- =========================================================
 HDT = {
     Enabled = false, AutoTrigger = true, Speed = 10, Delay = 0,
-    StopDistance = 2, SafetyTimeout = 0.4,
-    _dragId = 0, _dragging = false, _conn = nil, _bv = nil, _saved = nil,
-    _lastFire = 0, _fireDebounce = 0.5,
-}
-
-local OWN_BLOCK_ANIMS_SET = {
-    ["96959123077498"]  = true,
-    ["90970641235403"]  = true,
-    ["72722244508749"]  = true,
+    StopDistance = 2, SafetyTimeout = 1.5,
+    _dragId = 0, _dragging = false, _conn = nil, _saved = nil,
+    _lastFire = 0, _fireDebounce = 0.15,
 }
 
 local function startDrag(targetPart)
@@ -336,34 +385,30 @@ local function startDrag(targetPart)
     HDT._dragId += 1
     local myId = HDT._dragId
     if HDT._conn then HDT._conn:Disconnect() HDT._conn = nil end
-    if HDT._bv and HDT._bv.Parent then HDT._bv:Destroy() end
-    HDT._bv = nil
 
     HDT._dragging = true
-    local saved = { walk = humanoid.WalkSpeed, jump = humanoid.JumpPower,
-        platformStand = humanoid.PlatformStand, autoRotate = humanoid.AutoRotate }
+    local saved = {
+        walk = humanoid.WalkSpeed,
+        jump = humanoid.JumpPower,
+        autoRotate = humanoid.AutoRotate,
+    }
     HDT._saved = saved
-    humanoid.WalkSpeed = 0; humanoid.JumpPower = 0
-    humanoid.PlatformStand = false; humanoid.AutoRotate = false
-
-    local bv = Instance.new("BodyVelocity")
-    bv.MaxForce = Vector3.new(100000, 0, 100000)
-    bv.Velocity = Vector3.zero; bv.Parent = hrp
-    HDT._bv = bv
+    humanoid.WalkSpeed = 0
+    humanoid.AutoRotate = false
 
     local function cleanup()
         if HDT._dragId ~= myId then return end
         HDT._dragging = false
         if HDT._conn then HDT._conn:Disconnect() HDT._conn = nil end
-        if bv and bv.Parent then bv:Destroy() end
         if humanoid and humanoid.Parent then
-            humanoid.WalkSpeed = saved.walk; humanoid.JumpPower = saved.jump
-            humanoid.PlatformStand = saved.platformStand; humanoid.AutoRotate = saved.autoRotate
+            humanoid.WalkSpeed = saved.walk
+            humanoid.JumpPower = saved.jump
+            humanoid.AutoRotate = saved.autoRotate
         end
-        HDT._bv = nil; HDT._saved = nil
+        HDT._saved = nil
     end
 
-    HDT._conn = RunService.Heartbeat:Connect(function()
+    HDT._conn = RunService.Heartbeat:Connect(function(dt)
         if HDT._dragId ~= myId then
             if HDT._conn then HDT._conn:Disconnect() HDT._conn = nil end
             return
@@ -373,17 +418,18 @@ local function startDrag(targetPart)
         end
         local myPos = hrp.Position
         local tgtPos = targetPart.Position
-        local dx = tgtPos.X - myPos.X
-        local dz = tgtPos.Z - myPos.Z
-        local horizSq = dx*dx + dz*dz
-        if horizSq > 1.0E-4 then
-            local dist = math.sqrt(horizSq)
-            bv.Velocity = Vector3.new((dx / dist) * HDT.Speed, 0, (dz / dist) * HDT.Speed)
-            hrp.CFrame = CFrame.lookAt(myPos, Vector3.new(tgtPos.X, myPos.Y, tgtPos.Z))
-        else
-            bv.Velocity = Vector3.zero
+        local flat = Vector3.new(tgtPos.X, myPos.Y, tgtPos.Z)
+        local delta = flat - myPos
+        local dist = delta.Magnitude
+        if dist <= HDT.StopDistance then cleanup(); return end
+        local maxStep = HDT.Speed * dt
+        local step = math.min(maxStep, dist - HDT.StopDistance)
+        if step > 0 then
+            local newPos = myPos + delta.Unit * step
+            hrp.CFrame = CFrame.lookAt(newPos, flat)
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
         end
-        if (tgtPos - myPos).Magnitude <= HDT.StopDistance then cleanup() end
     end)
 
     task.delay(HDT.SafetyTimeout, function()
@@ -410,35 +456,14 @@ lp.CharacterAdded:Connect(function()
     HDT._dragId += 1
     HDT._dragging = false
     if HDT._conn then HDT._conn:Disconnect() HDT._conn = nil end
-    if HDT._bv and HDT._bv.Parent then HDT._bv:Destroy() end
-    HDT._bv = nil; HDT._saved = nil
+    HDT._saved = nil
 end)
 
-local hdtAnimatorConn = nil
-local function hookHDTAnimator()
-    if hdtAnimatorConn then hdtAnimatorConn:Disconnect() hdtAnimatorConn = nil end
-    local char = lp.Character
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    local animator = hum and hum:FindFirstChildOfClass("Animator")
-    if not animator then return end
-    hdtAnimatorConn = animator.AnimationPlayed:Connect(function(track)
-        if not HDT.Enabled or not HDT.AutoTrigger then return end
-        local id = track.Animation and tostring(track.Animation.AnimationId):match("(%d+)")
-        if not id or not OWN_BLOCK_ANIMS_SET[id] then return end
-        HDT.TriggerFromAutoBlock()
-    end)
-end
-hookHDTAnimator()
-lp.CharacterAdded:Connect(function()
-    task.wait(0.5)
-    hookHDTAnimator()
-end)
-
--- aim (button-trigger only)
+-- =========================================================
+-- AIM (soft only, no forced snap)
+-- =========================================================
 AIM = {
     Enabled     = false,
-    ForceAim    = false,
     AimMode     = "Camera",
     Smooth      = 0.35,
     PredictMode = "Both",
@@ -447,7 +472,7 @@ AIM = {
     Debug       = false,
     CurrentAbility  = nil,
     CachedTargetHRP = nil,
-    _forceUntil = 0,
+    _aimUntil  = 0,
 }
 
 local PING_ABILITIES = { AimGun = true, GunFire = true, GunExplode = true, GunFail = true }
@@ -523,67 +548,79 @@ local function predictHRP(hrp)
     return hrp.Position + vel * totalLead
 end
 
-local function applyAim(targetPos)
-    if not targetPos then return end
-    local smooth = AIM.Smooth
-    local mode = AIM.AimMode
-    if mode == "Camera" or mode == "HRP+Camera" then
-        Camera.CFrame = Camera.CFrame:Lerp(
-            CFrame.lookAt(Camera.CFrame.Position, targetPos), smooth)
-    end
-    if mode == "HRP" or mode == "HRP+Camera" then
-        local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-        if myRoot then
-            local flat = Vector3.new(targetPos.X, myRoot.Position.Y, targetPos.Z)
-            if (flat - myRoot.Position).Magnitude > 0.1 then
-                myRoot.CFrame = myRoot.CFrame:Lerp(
-                    CFrame.lookAt(myRoot.Position, flat), smooth)
-            end
-        end
-    end
-end
-
-function AIM.ForceAimNow(duration, abilityName)
-    AIM._forceUntil = tick() + (duration or 1.0)
+function AIM.AimFor(duration, abilityName)
+    AIM._aimUntil = tick() + (duration or 1.0)
     if abilityName then AIM.CurrentAbility = abilityName end
 end
 
-RunService.RenderStepped:Connect(function()
-    if not isPlayingSurvivor() then return end
-    if not AIM.CachedTargetHRP or not AIM.CachedTargetHRP.Parent then return end
+local hrpAutoRotateSaved = nil
+local function restoreAutoRotate()
+    if hrpAutoRotateSaved == nil then return end
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.AutoRotate = hrpAutoRotateSaved end
+    hrpAutoRotateSaved = nil
+end
+local function disableAutoRotate()
+    local char = lp.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if hrpAutoRotateSaved == nil then hrpAutoRotateSaved = hum.AutoRotate end
+    hum.AutoRotate = false
+end
 
-    local forced = tick() < (AIM._forceUntil or 0)
-    local active = forced or (AIM.Enabled and AIM.ForceAim)
-    if not active then
+lp.CharacterAdded:Connect(function()
+    hrpAutoRotateSaved = nil
+end)
+
+RunService:BindToRenderStep("HunterAim", Enum.RenderPriority.Camera.Value + 1, function()
+    if not isPlayingSurvivor() then
+        restoreAutoRotate()
+        return
+    end
+
+    local active = AIM.Enabled or (tick() < (AIM._aimUntil or 0))
+
+    if not active
+       or not AIM.CachedTargetHRP
+       or not AIM.CachedTargetHRP.Parent then
         AIM.CurrentAbility = nil
+        restoreAutoRotate()
+        return
+    end
+
+    local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then
+        restoreAutoRotate()
         return
     end
 
     local targetPos = predictHRP(AIM.CachedTargetHRP)
     if not targetPos then return end
 
-    if forced then
-        local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-        if myRoot then
-            myRoot.AssemblyAngularVelocity = Vector3.zero
-            local flat = Vector3.new(targetPos.X, myRoot.Position.Y, targetPos.Z)
-            if (flat - myRoot.Position).Magnitude > 0.05 then
-                local cf = CFrame.lookAt(myRoot.Position, flat)
-                myRoot.CFrame = cf
-                myRoot.CFrame = cf
-                myRoot.CFrame = cf
-                myRoot.CFrame = cf
-            end
+    local mode = AIM.AimMode
+    local smooth = AIM.Smooth
+
+    if mode == "Camera" or mode == "HRP+Camera" then
+        local desired = CFrame.lookAt(Camera.CFrame.Position, targetPos)
+        Camera.CFrame = Camera.CFrame:Lerp(desired, smooth)
+    end
+
+    if mode == "HRP" or mode == "HRP+Camera" then
+        disableAutoRotate()
+        local flat = Vector3.new(targetPos.X, myRoot.Position.Y, targetPos.Z)
+        local delta = flat - myRoot.Position
+        if delta.Magnitude > 0.05 then
+            local desired = CFrame.lookAt(myRoot.Position, flat)
+            myRoot.CFrame = myRoot.CFrame:Lerp(desired, smooth)
         end
-        pcall(function()
-            Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, targetPos)
-        end)
     else
-        applyAim(targetPos)
+        restoreAutoRotate()
     end
 end)
 
--- ability button hook (stun abilities only)
+-- ability button hook (soft aim on stun tap)
 AbilityHook = {
     Enabled = true,
 
@@ -596,6 +633,8 @@ AbilityHook = {
     },
 
     LockMultiplier = 1.0,
+    Cooldown       = 1.0,     -- min seconds between aim triggers (1-60)
+    _lastFire      = 0,
 
     Hooked   = {},
     LastTap  = {},
@@ -623,9 +662,12 @@ local function ahFireButtonAim(btn, cfg)
     if last and now - last < AbilityHook.Debounce then return end
     AbilityHook.LastTap[btn] = now
 
+    if now - (AbilityHook._lastFire or 0) < (AbilityHook.Cooldown or 1.0) then return end
+    AbilityHook._lastFire = now
+
     if AIM then
         local dur = (cfg.Lock or 0.6) * (AbilityHook.LockMultiplier or 1.0)
-        AIM.ForceAimNow(dur, cfg.Ability)
+        AIM.AimFor(dur, cfg.Ability)
     end
 end
 
@@ -656,7 +698,7 @@ local function ahHookButton(btn, cfg)
     end)
 
     if AIM and AIM.Debug then
-        print("[ah] hooked stun button (strict): " .. tostring(btn.Name))
+        print("[ah] hooked stun button: " .. tostring(btn.Name))
     end
 end
 
@@ -1403,24 +1445,6 @@ end
 
 FacingVisual.GameBoxStyle = fvSniffGameBoxStyle()
 
-local function facingDotClamped()
-    return math.clamp(CFG.FacingDot or 0.25, -1, 1)
-end
-
-local function getFacingState(killerRoot)
-    local myRoot = getMyRoot()
-    if not myRoot or not killerRoot then return false, false end
-    local delta = myRoot.Position - killerRoot.Position
-    local dist = delta.Magnitude
-    local ir = dist <= CFG.DetectionRange
-    local fp = false
-    if dist > 0.001 then
-        fp = killerRoot.CFrame.LookVector:Dot(delta.Unit) > facingDotClamped()
-    end
-    if not CFG.FacingCheck then fp = true end
-    return ir, fp
-end
-
 local function fvStateColor(ir, fp)
     if ir and fp then return FacingVisual.PassColor end
     if ir then return FacingVisual.InRangeColor end
@@ -1595,9 +1619,11 @@ end
 -- UI (WindUI)
 -- =========================================================
 
+local HUNTER_ICON = "rbxassetid://10709797008"
+
 local Window = WindUI:CreateWindow({
     Title = "hunter",
-    Icon = "rbxassetid://4483362458",
+    Icon = HUNTER_ICON,
     Author = "gg",
     Folder = "hunter",
     Size = UDim2.fromOffset(580, 460),
@@ -1615,7 +1641,7 @@ local function firstOpt(opt, default)
 end
 
 -- esp
-local ESPTab = Window:Tab({ Title = "esp", Icon = "rbxassetid://4483362458" })
+local ESPTab = Window:Tab({ Title = "esp", Icon = HUNTER_ICON })
 ESPTab:Section({ Title = "players" })
 ESPTab:Toggle({
     Title = "killer", Value = false, Flag = "ESP_Killers",
@@ -1636,7 +1662,7 @@ ESPTab:Toggle({
 })
 
 -- stam
-local StamTab = Window:Tab({ Title = "stam", Icon = "rbxassetid://4483362458" })
+local StamTab = Window:Tab({ Title = "stam", Icon = HUNTER_ICON })
 StamTab:Section({ Title = "sprint" })
 if not Sprinting then
     StamTab:Paragraph({ Title = "n/a", Desc = "no sprinting module" })
@@ -1664,10 +1690,14 @@ else
 end
 
 -- auto block
-local ABTab = Window:Tab({ Title = "auto block", Icon = "rbxassetid://4483362458" })
+local ABTab = Window:Tab({ Title = "auto block", Icon = HUNTER_ICON })
 ABTab:Toggle({
     Title = "on", Value = false, Flag = "AutoBlock",
     Callback = function(v) CFG.AutoBlockEnabled = v end,
+})
+ABTab:Paragraph({
+    Title = "info",
+    Desc = "auto block only fires when YOU are inside the killer's box (their forward view cone)",
 })
 ABTab:Slider({
     Title = "range", Value = { Min = 8, Max = 60, Default = CFG.DetectionRange }, Flag = "AB_Range",
@@ -1701,17 +1731,17 @@ ABTab:Slider({
 })
 
 -- hdt
-local HDTTab = Window:Tab({ Title = "hdt", Icon = "rbxassetid://4483362458" })
+local HDTTab = Window:Tab({ Title = "hdt", Icon = HUNTER_ICON })
 HDTTab:Toggle({
     Title = "on", Value = false, Flag = "HDT_On",
     Callback = function(v) HDT.Enabled = v end,
 })
 HDTTab:Toggle({
-    Title = "on block anim", Value = true, Flag = "HDT_Auto",
+    Title = "auto on block", Value = true, Flag = "HDT_Auto",
     Callback = function(v) HDT.AutoTrigger = v end,
 })
 HDTTab:Slider({
-    Title = "speed", Value = { Min = 2, Max = 20, Default = HDT.Speed, Rounding = 1 }, Flag = "HDT_Speed",
+    Title = "speed", Value = { Min = 2, Max = 40, Default = HDT.Speed, Rounding = 1 }, Flag = "HDT_Speed",
     Callback = function(v) HDT.Speed = v end,
 })
 HDTTab:Slider({
@@ -1719,8 +1749,12 @@ HDTTab:Slider({
     Callback = function(v) HDT.Delay = v end,
 })
 HDTTab:Slider({
-    Title = "stop", Value = { Min = 1, Max = 5, Default = HDT.StopDistance, Rounding = 1 }, Flag = "HDT_Stop",
+    Title = "stop", Value = { Min = 1, Max = 8, Default = HDT.StopDistance, Rounding = 1 }, Flag = "HDT_Stop",
     Callback = function(v) HDT.StopDistance = v end,
+})
+HDTTab:Slider({
+    Title = "max drag time", Value = { Min = 0.2, Max = 3, Default = HDT.SafetyTimeout, Rounding = 2 }, Flag = "HDT_Timeout",
+    Callback = function(v) HDT.SafetyTimeout = v end,
 })
 HDTTab:Keybind({
     Title = "manual", Value = Enum.KeyCode.Q,
@@ -1728,20 +1762,16 @@ HDTTab:Keybind({
 })
 
 -- aim
-local AimTab = Window:Tab({ Title = "aim", Icon = "rbxassetid://4483362458" })
+local AimTab = Window:Tab({ Title = "aim", Icon = HUNTER_ICON })
 
 AimTab:Section({ Title = "main" })
 AimTab:Toggle({
     Title = "on", Value = false, Flag = "Aim_On",
     Callback = function(v) AIM.Enabled = v end,
 })
-AimTab:Toggle({
-    Title = "force aim", Value = false, Flag = "Aim_Force",
-    Callback = function(v) AIM.ForceAim = v end,
-})
 AimTab:Keybind({
-    Title = "force 3s", Value = Enum.KeyCode.C,
-    Callback = function() AIM.ForceAimNow(3.0) end,
+    Title = "pulse 3s", Value = Enum.KeyCode.C,
+    Callback = function() AIM.AimFor(3.0) end,
 })
 AimTab:Toggle({
     Title = "debug", Value = false, Flag = "Aim_Debug",
@@ -1759,23 +1789,19 @@ AimTab:Toggle({
         end
     end,
 })
-AimTab:Paragraph({
-    Title = "info",
-    Desc = "fires only on stun abilities: chance shoot / shed slash / two time dagger / guest punch / jane hatchet",
+AimTab:Slider({
+    Title = "ability cooldown", Value = { Min = 1, Max = 60, Default = AbilityHook.Cooldown, Rounding = 1 }, Flag = "Aim_BtnCooldown",
+    Callback = function(v) AbilityHook.Cooldown = v end,
 })
 AimTab:Paragraph({
-    Title = "strict",
-    Desc = "requires a full click release inside the button - grazing won't trigger",
+    Title = "info",
+    Desc = "cooldown between aim triggers. Fires only on stun abilities: chance shoot / shed slash / two time dagger / guest punch / jane hatchet",
 })
 AimTab:Slider({
     Title = "lock multiplier",
     Value = { Min = 0.5, Max = 4, Default = AbilityHook.LockMultiplier, Rounding = 1 },
     Flag = "Aim_LockMult",
     Callback = function(v) AbilityHook.LockMultiplier = v end,
-})
-AimTab:Paragraph({
-    Title = "lock info",
-    Desc = "1x = base (0.5-1.2s), 2x = doubled, 4x = max",
 })
 
 AimTab:Section({ Title = "mode" })
@@ -1809,7 +1835,7 @@ AimTab:Slider({
 })
 
 -- box
-local BoxTab = Window:Tab({ Title = "box", Icon = "rbxassetid://4483362458" })
+local BoxTab = Window:Tab({ Title = "box", Icon = HUNTER_ICON })
 BoxTab:Section({ Title = "box check" })
 BoxTab:Toggle({
     Title = "on", Value = false, Flag = "FV_Box",
@@ -1902,7 +1928,7 @@ BoxTab:Button({
 })
 
 -- stab
-local StabTab = Window:Tab({ Title = "stab", Icon = "rbxassetid://4483362458" })
+local StabTab = Window:Tab({ Title = "stab", Icon = HUNTER_ICON })
 StabTab:Toggle({
     Title = "on", Value = false, Flag = "Stab_On",
     Callback = function(v) STAB.Enabled = v end,
@@ -1937,7 +1963,19 @@ StabTab:Button({
 })
 
 -- misc
-local MiscTab = Window:Tab({ Title = "misc", Icon = "rbxassetid://4483362458" })
+local MiscTab = Window:Tab({ Title = "misc", Icon = HUNTER_ICON })
+
+MiscTab:Section({ Title = "theme" })
+MiscTab:Dropdown({
+    Title = "ui theme",
+    Values = { "Dark", "Light", "Rose", "Violet", "Green", "Blue", "Red", "Aqua", "Amethyst", "Sunset" },
+    Value = "Dark",
+    Flag = "UI_Theme",
+    Callback = function(opt)
+        local t = firstOpt(opt, "Dark")
+        pcall(function() WindUI:SetTheme(t) end)
+    end,
+})
 
 MiscTab:Section({ Title = "azure" })
 MiscTab:Toggle({
