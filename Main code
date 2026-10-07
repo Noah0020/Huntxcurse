@@ -1,4 +1,4 @@
---[[ Huntersaken Main 2.7 — Max Speed Auto Block (v2.7.1 optimized) ]]
+--[[ Huntersaken Main 2.7.2 — Max Speed Auto Block (v2.7.2) ]]
 if _G._HS27 then return end
 _G._HS27=true
 repeat task.wait() until game:IsLoaded()
@@ -20,8 +20,9 @@ local S={
     AutoBlock=false,BlockMode="Normal",BlockRange=18,FacingDot=0.3,WallCheck=false,BlockStrictCheck=false,
     ShowBlockCone=false,ShowRangeCircle=false,
     AimMethod="HumanoidRoot Lock",AimHold=0.35,AimPrediction=0.06,AimSmoothness=0.35,AimOnBlock=false,
-    ParryEnabled=false,PunchDelay=0.0,
+    ParryEnabled=false,PunchDelay=0.06,
     HDT_Enabled=false,HDT_Speed=10,HDT_StopDist=2,HDT_MaxTime=0.4,HDT_MaxDistance=15,HDT_ExtendBlockRange=false,
+    HDT_Cooldown=27,
     Debug=false,
     KM1_Enabled=false,KM1_HoldTime=0.45,KM1_Method="HumanoidRoot Lock + Camera Lock",
     KM1_Smoothness=0.5,KM1_MaxDist=60,KM1_RequireFacing=false,
@@ -113,6 +114,13 @@ task.spawn(function()
     blockBuffer=buildAbilityBuffer("Block")
     blockArgs={blockBuffer}
 end)
+-- Punch buffer pre-built (avoids alloc on parry)
+local punchBuffer=nil
+local punchArgs=nil
+task.spawn(function()
+    punchBuffer=buildAbilityBuffer("Punch")
+    punchArgs={punchBuffer}
+end)
 -- Cached remote (populated on first use)
 local cachedRemote=nil
 local function fireBlockRaw()
@@ -122,8 +130,8 @@ local function fireBlockRaw()
         cachedRemote=re
     end
     if not re or not blockArgs then return false end
-    -- direct pcall: no closure allocation
-    return (pcall(re.FireServer,re,"UseActorAbility",blockArgs))
+    -- closure pcall (safer across executors than method-detach pcall)
+    return (pcall(function() re:FireServer("UseActorAbility",blockArgs) end))
 end
 local function fireBlockFiresignal()
     if not firesignal then return false end
@@ -134,25 +142,33 @@ local function fireBlockFiresignal()
     return (pcall(firesignal,blk.MouseButton1Click))
 end
 local function firePunch()
-    local re=getRemote();if not re then return false end
-    local pb=buildAbilityBuffer("Punch")
+    local re=cachedRemote
+    if not re or not re.Parent then
+        re=getRemote()
+        cachedRemote=re
+    end
+    if not re or not punchArgs then return false end
     local ok=false
     for i=1,2 do
-        if pcall(function() re:FireServer("UseActorAbility",{pb}) end) then ok=true end
+        if pcall(function() re:FireServer("UseActorAbility",punchArgs) end) then ok=true end
         if i<2 then task.wait(0.03) end
     end
     return ok
 end
 local function getRoot(m) return m and (m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart) end
--- Cached local HRP (invalidated on respawn)
+-- Cached local HRP (invalidated on character change or dead part)
+local _myCharCache=nil
 local _myHRPcache=nil
 local function getMyHRP()
+    local c=LocalPlayer.Character
+    if c~=_myCharCache then
+        _myCharCache=c
+        _myHRPcache=c and c:FindFirstChild("HumanoidRootPart")
+    end
     local h=_myHRPcache
     if h and h.Parent then return h end
-    local c=LocalPlayer.Character
-    h=c and c:FindFirstChild("HumanoidRootPart")
-    _myHRPcache=h
-    return h
+    _myHRPcache=c and c:FindFirstChild("HumanoidRootPart")
+    return _myHRPcache
 end
 local function getMyHum() local c=LocalPlayer.Character; return c and c:FindFirstChildOfClass("Humanoid") end
 local function getMyRole()
@@ -278,9 +294,14 @@ local function aimAt(pos)
         end)
     end
 end
+-- HDT
 local hdtActive=false
 local hdtBV,hdtConn,hdtTargetModel=nil,nil,nil
 local hdtSavedWalk,hdtSavedJump,hdtCapThread=nil,nil,nil
+local hdtLastUse=0
+local function hdtOnCooldown()
+    return (os.clock()-hdtLastUse) < (S.HDT_Cooldown or 27)
+end
 local function stopHDT(reason)
     if not hdtActive and not hdtBV then return end
     hdtActive=false
@@ -298,6 +319,7 @@ local function stopHDT(reason)
 end
 local function startHDT(targetModelOrHRP)
     if not S.HDT_Enabled or hdtActive then return end
+    if hdtOnCooldown() then return end   -- 27s cooldown
     local targetModel
     if targetModelOrHRP and targetModelOrHRP:IsA("BasePart") then
         targetModel=targetModelOrHRP:FindFirstAncestorOfClass("Model")
@@ -311,6 +333,7 @@ local function startHDT(targetModelOrHRP)
     if dist<=(S.HDT_StopDist or 2)+0.1 then return end
     if not lockAutoRotate() then return end
     hdtActive=true
+    hdtLastUse=os.clock()  -- mark cooldown start
     hdtTargetModel=targetModel
     hdtSavedWalk=hum.WalkSpeed; hdtSavedJump=hum.JumpPower
     hum.WalkSpeed=0; hum.JumpPower=0
@@ -345,7 +368,7 @@ local function startHDT(targetModelOrHRP)
         if hdtActive then stopHDT("cap") end
     end)
 end
--- ============ SPEED: minimal tryBlock (squared-dist, weak-key throttle) ============
+-- ============ SPEED: minimal tryBlock ============
 local lastBlockTime,lastParry=0,0
 local BLOCK_COOLDOWN=0.02
 local soundThrottle=setmetatable({},{__mode="k"})
@@ -389,19 +412,22 @@ local function tryBlock(killerModel,killerHRP,soundId)
     local fired=fireBlockRaw()
     if not fired then fired=fireBlockFiresignal() end
     if fired and S.HDT_Enabled then task.defer(startHDT,killerHRP) end
+    -- Parry: fire punch after successful block (throttled)
     if fired and S.ParryEnabled then
-        task.spawn(function()
-            task.wait(0.06)
-            if not blockReady() and os.clock()-lastParry>=0.15 then
-                lastParry=os.clock()
-                if (S.PunchDelay or 0)>0 then task.wait(S.PunchDelay) end
-                firePunch()
+        local t=os.clock()
+        if t-lastParry>=0.15 then
+            lastParry=t
+            local delay=S.PunchDelay or 0.06
+            if delay>0 then
+                task.spawn(function() task.wait(delay); firePunch() end)
+            else
+                task.spawn(firePunch)
             end
-        end)
+        end
     end
     return fired
 end
--- ============ SPEED: hooks bound directly to killer (no parent walk) ============
+-- ============ SPEED: hooks bound directly to killer ============
 local soundHooks=setmetatable({},{__mode="k"})
 local function extractId(s) return tostring(s.SoundId):match("%d+") end
 local function hookSound(sound,killer)
@@ -898,7 +924,7 @@ LocalPlayer.CharacterAdded:Connect(function(c)
     task.spawn(aaSetup,c)
 end)
 LocalPlayer.CharacterAdded:Connect(function()
-    _myHRPcache=nil
+    _myCharCache=nil; _myHRPcache=nil
     resetAutoRotate(); stopHDT("respawn"); releaseAim()
     task.wait(1.5); scanAllKillers()
 end)
@@ -1484,7 +1510,7 @@ local UI_OK,UI=pcall(function()
 end)
 if not UI_OK or type(UI)~="table" or type(UI.CreateWindow)~="function" then warn("[HS] Mini5 failed: "..tostring(UI)); return end
 print("[HS] Mini5 OK")
-local Window=UI.CreateWindow({Name="Huntersaken Main",Description="2.7.1",Size=620,Version="2.7.1",Theme="Cursed"})
+local Window=UI.CreateWindow({Name="Huntersaken Main",Description="2.7.2",Size=620,Version="2.7.2",Theme="Cursed"})
 local function notify(t,d,dur) pcall(function() Window:Notification({Name=t,Description=d,Duration=dur or 3}) end) end
 local Combat=Window:AddCategory("Combat")
 local Automation=Window:AddCategory("Automation")
@@ -1520,6 +1546,7 @@ HT:AddSlider(sA("Drag Speed",1,20,S.HDT_Speed,0.5,function(v) S.HDT_Speed=v end)
 HT:AddSlider(sA("Stop Distance (studs)",0.5,6,S.HDT_StopDist,0.1,function(v) S.HDT_StopDist=v end))
 HT:AddSlider(sA("Max Duration (s)",0.1,1.5,S.HDT_MaxTime,0.05,function(v) S.HDT_MaxTime=v end))
 HT:AddSlider(sA("Max Distance (studs)",5,30,S.HDT_MaxDistance,0.5,function(v) S.HDT_MaxDistance=v end))
+HT:AddSlider(sA("HDT Cooldown (s)",0,60,S.HDT_Cooldown,1,function(v) S.HDT_Cooldown=v end,"Minimum time between HDT triggers"))
 local ST=Combat:AddTab("Stab","Run")
 ST:AddSection("HunterStab")
 ST:AddToggle(tA("Enable HunterStab",S.Stab_Enabled,function(v) S.Stab_Enabled=v end,"Auto-stab on dagger anim. H = manual"))
@@ -1651,5 +1678,5 @@ task.spawn(function()
         end
     end
 end)
-notify("Huntersaken 2.7.1","Loaded. Max-speed block.",4)
-print("[HS] Loaded — 2.7.1, max-speed auto block")
+notify("Huntersaken 2.7.2","Loaded. Block fixed + HDT 27s CD.",4)
+print("[HS] Loaded — 2.7.2")
