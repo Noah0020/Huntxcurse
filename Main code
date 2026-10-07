@@ -1,4 +1,4 @@
---[[ Huntersaken Main 2.7 — Max Speed Auto Block ]]
+--[[ Huntersaken Main 2.7 — Max Speed Auto Block (v2.7.1 optimized) ]]
 if _G._HS27 then return end
 _G._HS27=true
 repeat task.wait() until game:IsLoaded()
@@ -106,14 +106,24 @@ local function buildAbilityBuffer(name)
     for i=1,len do buffer.writeu8(b,4+i,string.byte(name,i)) end
     return b
 end
--- Block buffer pre-built (never changes)
+-- Block buffer + args pre-built once
 local blockBuffer=nil
+local blockArgs=nil
 task.spawn(function()
     blockBuffer=buildAbilityBuffer("Block")
+    blockArgs={blockBuffer}
 end)
+-- Cached remote (populated on first use)
+local cachedRemote=nil
 local function fireBlockRaw()
-    local re=getRemote(); if not re or not blockBuffer then return false end
-    return (pcall(function() re:FireServer("UseActorAbility",{blockBuffer}) end))
+    local re=cachedRemote
+    if not re or not re.Parent then
+        re=getRemote()
+        cachedRemote=re
+    end
+    if not re or not blockArgs then return false end
+    -- direct pcall: no closure allocation
+    return (pcall(re.FireServer,re,"UseActorAbility",blockArgs))
 end
 local function fireBlockFiresignal()
     if not firesignal then return false end
@@ -134,7 +144,16 @@ local function firePunch()
     return ok
 end
 local function getRoot(m) return m and (m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart) end
-local function getMyHRP() local c=LocalPlayer.Character; return c and c:FindFirstChild("HumanoidRootPart") end
+-- Cached local HRP (invalidated on respawn)
+local _myHRPcache=nil
+local function getMyHRP()
+    local h=_myHRPcache
+    if h and h.Parent then return h end
+    local c=LocalPlayer.Character
+    h=c and c:FindFirstChild("HumanoidRootPart")
+    _myHRPcache=h
+    return h
+end
 local function getMyHum() local c=LocalPlayer.Character; return c and c:FindFirstChildOfClass("Humanoid") end
 local function getMyRole()
     local c=LocalPlayer.Character; local p=c and c.Parent
@@ -326,45 +345,54 @@ local function startHDT(targetModelOrHRP)
         if hdtActive then stopHDT("cap") end
     end)
 end
--- ============ SPEED: minimal tryBlock ============
+-- ============ SPEED: minimal tryBlock (squared-dist, weak-key throttle) ============
 local lastBlockTime,lastParry=0,0
-local BLOCK_COOLDOWN=0.02  -- was 0.15
-local soundThrottle={}
-local function tryBlock(killerModel,killerHRP,reason,soundKey)
+local BLOCK_COOLDOWN=0.02
+local soundThrottle=setmetatable({},{__mode="k"})
+local function tryBlock(killerModel,killerHRP,soundId)
     if not S.AutoBlock then return false end
     if not killerHRP or not killerHRP.Parent then return false end
     local now=os.clock()
     if now-lastBlockTime<BLOCK_COOLDOWN then return false end
-    if soundKey and soundThrottle[soundKey] and now<soundThrottle[soundKey] then return false end
-    local our=getMyHRP(); if not our then return false end
-    local dist=(our.Position-killerHRP.Position).Magnitude
+    if soundId then
+        local kt=soundThrottle[killerModel]
+        if kt and kt[soundId] and now<kt[soundId] then return false end
+    end
+    local our=_myHRPcache
+    if not our or not our.Parent then
+        our=getMyHRP()
+        if not our then return false end
+    end
+    local op=our.Position; local kp=killerHRP.Position
+    local dx=op.X-kp.X; local dy=op.Y-kp.Y; local dz=op.Z-kp.Z
     local effRange=S.BlockRange
-    if S.HDT_Enabled and S.HDT_ExtendBlockRange then effRange=S.BlockRange+(S.HDT_MaxDistance or 15) end
-    if dist>effRange then return false end
-    -- Strict checks are opt-in (they cost ~5-15ms)
+    if S.HDT_Enabled and S.HDT_ExtendBlockRange then
+        effRange=effRange+(S.HDT_MaxDistance or 15)
+    end
+    if dx*dx+dy*dy+dz*dz>effRange*effRange then return false end
     if S.BlockStrictCheck then
         local ourRoot=getRoot(LocalPlayer.Character)
         if ourRoot and not isFacing(ourRoot,killerHRP) then return false end
         if not hasLineOfSight(killerHRP) then return false end
     end
     lastBlockTime=now
-    if soundKey then soundThrottle[soundKey]=now+0.25 end
-    -- Aim pre-fire (rotate before block)
-    if S.AimOnBlock then
-        local predicted=killerHRP.Position+killerHRP.AssemblyLinearVelocity*(S.AimPrediction or 0.06)
-        aimAt(predicted)
+    if soundId then
+        local kt=soundThrottle[killerModel]
+        if not kt then kt={}; soundThrottle[killerModel]=kt end
+        kt[soundId]=now+0.25
     end
-    -- FAST: direct remote first (skips UI), firesignal as fallback
+    if S.AimOnBlock then
+        local v=killerHRP.AssemblyLinearVelocity
+        local lead=S.AimPrediction or 0.06
+        aimAt(Vector3.new(kp.X+v.X*lead,kp.Y+v.Y*lead,kp.Z+v.Z*lead))
+    end
     local fired=fireBlockRaw()
     if not fired then fired=fireBlockFiresignal() end
-    -- HDT
-    if fired and S.HDT_Enabled then task.defer(function() startHDT(killerHRP) end) end
-    -- Parry
+    if fired and S.HDT_Enabled then task.defer(startHDT,killerHRP) end
     if fired and S.ParryEnabled then
         task.spawn(function()
             task.wait(0.06)
-            if not blockReady() then
-                if os.clock()-lastParry<0.15 then return end
+            if not blockReady() and os.clock()-lastParry>=0.15 then
                 lastParry=os.clock()
                 if (S.PunchDelay or 0)>0 then task.wait(S.PunchDelay) end
                 firePunch()
@@ -373,75 +401,52 @@ local function tryBlock(killerModel,killerHRP,reason,soundKey)
     end
     return fired
 end
-task.spawn(function()
-    while true do
-        task.wait(5)
-        local now=os.clock()
-        for k,v in pairs(soundThrottle) do if v<now then soundThrottle[k]=nil end end
-    end
-end)
--- ============ SPEED: killer lookup cache ============
-local killerCache=setmetatable({},{__mode="k"})
-local function findKillerForInstance(inst)
-    local cached=killerCache[inst]
-    if cached then return cached.Parent and cached end
-    local p=inst
-    while p and p~=Workspace do
-        if p:IsA("Model") then
-            local parent=p.Parent
-            if parent and parent.Name=="Killers" then
-                killerCache[inst]=p
-                return p
-            end
-            if p:FindFirstChildOfClass("Humanoid") then
-                killerCache[inst]=p
-                return p
-            end
-        end
-        p=p.Parent
-    end
-end
--- ============ SPEED: fast hooks ============
+-- ============ SPEED: hooks bound directly to killer (no parent walk) ============
 local soundHooks=setmetatable({},{__mode="k"})
 local function extractId(s) return tostring(s.SoundId):match("%d+") end
-local function onSoundFired(sound)
-    if not S.AutoBlock then return end
-    local id=extractId(sound); if not id or not SOUND_DB[id] then return end
-    local killer=findKillerForInstance(sound.Parent); if not killer then return end
-    local hrp=getKillerHRP(killer); if not hrp then return end
-    tryBlock(killer,hrp,"SOUND:"..id,tostring(killer)..":"..id)
-end
-local function hookSound(sound)
+local function hookSound(sound,killer)
     if not sound or not sound:IsA("Sound") or soundHooks[sound] then return end
     soundHooks[sound]=true
-    sound.Played:Connect(function() onSoundFired(sound) end)
+    local hrp=getKillerHRP(killer)
+    sound.Played:Connect(function()
+        if not S.AutoBlock then return end
+        local id=extractId(sound)
+        if not id or not SOUND_DB[id] then return end
+        if not hrp or not hrp.Parent then
+            hrp=getKillerHRP(killer)
+            if not hrp then return end
+        end
+        tryBlock(killer,hrp,id)
+    end)
 end
 local animHooks=setmetatable({},{__mode="k"})
-local function onAnimPlayed(animator,track)
-    if not S.AutoBlock then return end
-    if not track or not track.Animation then return end
-    local id=tostring(track.Animation.AnimationId):match("%d+")
-    if not id or not ANIM_DB[id] then return end
-    local killer=findKillerForInstance(animator.Parent); if not killer then return end
-    local hrp=getKillerHRP(killer); if not hrp then return end
-    tryBlock(killer,hrp,"ANIM:"..id,nil)
-end
-local function hookAnimator(animator)
+local function hookAnimator(animator,killer)
     if not animator or not animator:IsA("Animator") or animHooks[animator] then return end
     animHooks[animator]=true
-    animator.AnimationPlayed:Connect(function(track) onAnimPlayed(animator,track) end)
+    local hrp=getKillerHRP(killer)
+    animator.AnimationPlayed:Connect(function(track)
+        if not S.AutoBlock then return end
+        local a=track.Animation; if not a then return end
+        local id=tostring(a.AnimationId):match("%d+")
+        if not id or not ANIM_DB[id] then return end
+        if not hrp or not hrp.Parent then
+            hrp=getKillerHRP(killer)
+            if not hrp then return end
+        end
+        tryBlock(killer,hrp,nil)
+    end)
 end
 local tracked=setmetatable({},{__mode="k"})
 local function trackKiller(killer)
     if not killer or not killer:IsA("Model") or tracked[killer] then return end
     tracked[killer]=true
     for _,d in ipairs(killer:GetDescendants()) do
-        if d:IsA("Sound") then hookSound(d)
-        elseif d:IsA("Animator") then hookAnimator(d) end
+        if d:IsA("Sound") then hookSound(d,killer)
+        elseif d:IsA("Animator") then hookAnimator(d,killer) end
     end
     killer.DescendantAdded:Connect(function(d)
-        if d:IsA("Sound") then task.defer(function() hookSound(d) end)
-        elseif d:IsA("Animator") then task.defer(function() hookAnimator(d) end) end
+        if d:IsA("Sound") then task.defer(hookSound,d,killer)
+        elseif d:IsA("Animator") then task.defer(hookAnimator,d,killer) end
     end)
 end
 local function scanAllKillers()
@@ -893,6 +898,7 @@ LocalPlayer.CharacterAdded:Connect(function(c)
     task.spawn(aaSetup,c)
 end)
 LocalPlayer.CharacterAdded:Connect(function()
+    _myHRPcache=nil
     resetAutoRotate(); stopHDT("respawn"); releaseAim()
     task.wait(1.5); scanAllKillers()
 end)
@@ -1478,7 +1484,7 @@ local UI_OK,UI=pcall(function()
 end)
 if not UI_OK or type(UI)~="table" or type(UI.CreateWindow)~="function" then warn("[HS] Mini5 failed: "..tostring(UI)); return end
 print("[HS] Mini5 OK")
-local Window=UI.CreateWindow({Name="Huntersaken Main",Description="2.7",Size=620,Version="2.7",Theme="Cursed"})
+local Window=UI.CreateWindow({Name="Huntersaken Main",Description="2.7.1",Size=620,Version="2.7.1",Theme="Cursed"})
 local function notify(t,d,dur) pcall(function() Window:Notification({Name=t,Description=d,Duration=dur or 3}) end) end
 local Combat=Window:AddCategory("Combat")
 local Automation=Window:AddCategory("Automation")
@@ -1645,5 +1651,5 @@ task.spawn(function()
         end
     end
 end)
-notify("Huntersaken 2.7","Loaded. Max-speed block.",4)
-print("[HS] Loaded — 2.7, max-speed auto block")
+notify("Huntersaken 2.7.1","Loaded. Max-speed block.",4)
+print("[HS] Loaded — 2.7.1, max-speed auto block")
