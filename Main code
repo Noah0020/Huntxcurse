@@ -1,9 +1,12 @@
 -- hunter hub
 -- esp / stam / autoblock / hdt / aim / box / stab / misc
+-- GUI: Fluent (https://github.com/dawid-scripts/Fluent)
 
 repeat task.wait() until game:IsLoaded()
 
-local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -42,7 +45,7 @@ local BLOCK_BUF = buildBuffer("Block")
 local PUNCH_BUF = buildBuffer("Punch")
 
 local lastBlockFire = 0
-local BLOCK_COOLDOWN = 0.05   -- as fast as possible
+local BLOCK_COOLDOWN = 0.05
 
 local HDT, AIM, AbilityHook, AUTOGEN, STAB, AZ, HBE, FacingVisual
 
@@ -50,7 +53,7 @@ local function fireBlock()
     local now = tick()
     if now - lastBlockFire < BLOCK_COOLDOWN then return false end
     lastBlockFire = now
-    RemoteEvent:FireServer("UseActorAbility", { BLOCK_BUF })
+    pcall(function() RemoteEvent:FireServer("UseActorAbility", { BLOCK_BUF }) end)
     if FacingVisual then
         FacingVisual._blockPulse = (FacingVisual._blockPulse or 0) + 1
     end
@@ -61,7 +64,7 @@ local function fireBlock()
 end
 
 local function firePunch()
-    RemoteEvent:FireServer("UseActorAbility", { PUNCH_BUF })
+    pcall(function() RemoteEvent:FireServer("UseActorAbility", { PUNCH_BUF }) end)
 end
 
 local CFG = {
@@ -84,19 +87,14 @@ local RAY_LOS = RaycastParams.new()
 RAY_LOS.FilterType = Enum.RaycastFilterType.Exclude
 RAY_LOS.IgnoreWater = true
 
-local _losFilter = {}
 local function losTo(targetPos, ignoreModel)
     local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
     if not myRoot then return true end
     local delta = targetPos - myRoot.Position
     if delta.Magnitude < 0.001 then return true end
-    _losFilter[1] = lp.Character
-    if ignoreModel then
-        _losFilter[2] = ignoreModel
-    else
-        _losFilter[2] = nil
-    end
-    RAY_LOS.FilterDescendantsInstances = _losFilter
+    local filter = { lp.Character }
+    if ignoreModel then filter[2] = ignoreModel end
+    RAY_LOS.FilterDescendantsInstances = filter
     return workspace:Raycast(myRoot.Position, delta, RAY_LOS) == nil
 end
 
@@ -119,15 +117,15 @@ local function facingDotClamped()
     return math.clamp(CFG.FacingDot or 0.25, -1, 1)
 end
 
--- True when the LOCAL PLAYER is inside the killer's forward "view box".
-local function isClientInKillerBox(killerRoot)
+local function isClientInKillerBox(killerRoot, rangeOverride)
     if not killerRoot then return false end
     local myRoot = getMyRoot()
     if not myRoot then return false end
 
     local delta = myRoot.Position - killerRoot.Position
     local dist = delta.Magnitude
-    if dist > CFG.DetectionRange then return false end
+    local range = rangeOverride or CFG.DetectionRange
+    if dist > range then return false end
     if dist < 0.001 then return true end
 
     local look = killerRoot.CFrame.LookVector
@@ -161,8 +159,10 @@ local function getFacingState(killerRoot)
     local myRoot = getMyRoot()
     if not myRoot or not killerRoot then return false, false end
     local dist = (myRoot.Position - killerRoot.Position).Magnitude
-    local ir = dist <= CFG.DetectionRange
-    local fp = isClientInKillerBox(killerRoot)
+    local boxLength = (FacingVisual and FacingVisual.BoxLength) or 15
+    local range = math.max(CFG.DetectionRange, boxLength)
+    local ir = dist <= range
+    local fp = isClientInKillerBox(killerRoot, range)
     if not CFG.FacingCheck then fp = true end
     return ir, fp
 end
@@ -175,7 +175,7 @@ end
 
 local function shouldBlock(killerRoot)
     if not killerRoot or not killerRoot.Parent then return false end
-    if not isClientInKillerBox(killerRoot) then return false end
+    if not isClientInKillerBox(killerRoot, CFG.DetectionRange) then return false end
     if not hasLOS(killerRoot) then return false end
     return true
 end
@@ -193,7 +193,8 @@ local function nearestKillerPart()
     for _, k in ipairs(KillersFolder:GetChildren()) do
         if k:IsA("Model") then
             local hrp = k:FindFirstChild("HumanoidRootPart")
-            if hrp then
+            local hum = k:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then
                 local d = (hrp.Position - myRoot.Position).Magnitude
                 if d < bestDist then best, bestDist = hrp, d end
             end
@@ -254,8 +255,14 @@ local TRIGGER_ANIMS_SET = {}
 for _, id in ipairs(TRIGGER_ANIMS) do TRIGGER_ANIMS_SET[id] = true end
 
 local hookedSounds = {}
+local lastSoundFire = setmetatable({}, { __mode = "k" })
 
 local function onSoundTrigger(sound)
+    local now = tick()
+    local last = lastSoundFire[sound]
+    if last and now - last < 0.1 then return end
+    lastSoundFire[sound] = now
+
     local id = extractSoundId(sound)
     if not id or not TRIGGER_SOUNDS[id] then return end
     local ancestor = sound:FindFirstAncestorOfClass("Model")
@@ -279,11 +286,16 @@ end
 local function hookSound(sound)
     if hookedSounds[sound] then return end
     hookedSounds[sound] = true
-    sound.Played:Connect(function() onSoundTrigger(sound) end)
-    sound:GetPropertyChangedSignal("IsPlaying"):Connect(function()
+    local c1 = sound.Played:Connect(function() onSoundTrigger(sound) end)
+    local c2 = sound:GetPropertyChangedSignal("IsPlaying"):Connect(function()
         if sound.IsPlaying then onSoundTrigger(sound) end
     end)
-    sound.Destroying:Once(function() hookedSounds[sound] = nil end)
+    sound.Destroying:Once(function()
+        hookedSounds[sound] = nil
+        lastSoundFire[sound] = nil
+        pcall(function() c1:Disconnect() end)
+        pcall(function() c2:Disconnect() end)
+    end)
     if sound.IsPlaying then onSoundTrigger(sound) end
 end
 
@@ -327,6 +339,7 @@ local function hookKiller(killerModel)
         waitConns = {}
     end
 
+    local animConn
     local function tryHook()
         if hookedAnims[killerModel] then return true end
         if not killerModel.Parent then return false end
@@ -335,10 +348,13 @@ local function hookKiller(killerModel)
         local animator = humanoid:FindFirstChildOfClass("Animator")
         if not animator then return false end
         hookedAnims[killerModel] = true
-        animator.AnimationPlayed:Connect(function(track) onAnimPlayed(killerModel, track) end)
+        animConn = animator.AnimationPlayed:Connect(function(track)
+            onAnimPlayed(killerModel, track)
+        end)
         killerModel.Destroying:Once(function()
             hookedAnims[killerModel] = nil
             disconnectWaiters()
+            if animConn then pcall(function() animConn:Disconnect() end) end
         end)
         disconnectWaiters()
         return true
@@ -415,9 +431,11 @@ local function startDrag(targetPart)
             hrp.AssemblyAngularVelocity = Vector3.zero
         end
         if humanoid and humanoid.Parent then
-            humanoid.WalkSpeed = saved.walk
-            humanoid.JumpPower = saved.jump
-            humanoid.AutoRotate = saved.autoRotate
+            pcall(function()
+                humanoid.WalkSpeed = saved.walk
+                humanoid.JumpPower = saved.jump
+                humanoid.AutoRotate = saved.autoRotate
+            end)
         end
         HDT._saved = nil
     end
@@ -453,12 +471,11 @@ local function startDrag(targetPart)
     end)
 end
 
-function HDT.TriggerFromAutoBlock()
-    if not HDT.Enabled then return end
+function HDT.TriggerFromAutoBlock(force)
+    if not force and not HDT.Enabled then return end
     if tick() < (HDT._cooldownUntil or 0) then return end
     if tick() - HDT._lastFire < HDT._fireDebounce then return end
     if HDT._dragging then return end
-    HDT._lastFire = tick()
 
     local target = nearestKillerPart()
     if not target then return end
@@ -469,13 +486,15 @@ function HDT.TriggerFromAutoBlock()
         if d <= HDT.StopDistance + 0.5 then return end
     end
 
+    HDT._lastFire = tick()
+
     if HDT.Delay > 0 then
         task.delay(HDT.Delay, function() startDrag(target) end)
     else
         startDrag(target)
     end
 end
-HDT.Trigger = HDT.TriggerFromAutoBlock
+HDT.Trigger = function() HDT.TriggerFromAutoBlock(true) end
 
 lp.CharacterAdded:Connect(function()
     HDT._dragId += 1
@@ -486,7 +505,7 @@ lp.CharacterAdded:Connect(function()
 end)
 
 -- =========================================================
--- AIM (soft only, no forced snap)
+-- AIM
 -- =========================================================
 AIM = {
     Enabled     = false,
@@ -646,7 +665,9 @@ RunService:BindToRenderStep("HunterAim", Enum.RenderPriority.Camera.Value + 1, f
     end
 end)
 
--- ability button hook (soft aim on stun tap)
+-- =========================================================
+-- ability button hook
+-- =========================================================
 AbilityHook = {
     Enabled = true,
 
@@ -666,18 +687,90 @@ AbilityHook = {
     LastTap  = {},
     Debounce = 0.05,
     _uiWatcher = nil,
+
+    _pendingFire   = nil,
+    PendingWindow  = 0.35,
+    _animConn      = nil,
 }
 
-local AH_LOWER_MAP = {}
-for k, v in pairs(AbilityHook.StunAbilities) do
-    AH_LOWER_MAP[string.lower(k)] = v
+local ABILITY_KEYWORDS = {
+    Chance     = { "shoot", "gun", "oneshot", "one shot", "flint", "pistol", "revolver" },
+    Shedletsky = { "slash", "sword" },
+    TwoTime    = { "dagger", "stab", "knife" },
+    Guest1337  = { "punch", "fist" },
+    JaneDoe    = { "hatchet", "axe" },
+}
+
+local function ahResolveForChar()
+    local c = lp.Character
+    if not c then return nil end
+    local rawName = c:GetAttribute("CharacterName") or c.Name
+    if not rawName then return nil end
+    -- normalize: strip spaces/underscores and lowercase
+    local normalized = string.lower(tostring(rawName)):gsub("[%s_%-]", "")
+    for key, cfg in pairs(AbilityHook.StunAbilities) do
+        local kNorm = string.lower(key):gsub("[%s_%-]", "")
+        if kNorm == normalized then
+            return { key = key, cfg = cfg, kws = ABILITY_KEYWORDS[key] }
+        end
+    end
+    return nil
 end
 
-local function ahStunConfigForCurrentChar()
-    if not lp.Character then return nil end
-    local name = lp.Character:GetAttribute("CharacterName") or lp.Character.Name
-    if not name then return nil end
-    return AbilityHook.StunAbilities[name] or AH_LOWER_MAP[string.lower(name)]
+local function ahIsConfirmedPriority(prio)
+    return prio == Enum.AnimationPriority.Action
+        or prio == Enum.AnimationPriority.Action2
+        or prio == Enum.AnimationPriority.Action3
+        or prio == Enum.AnimationPriority.Action4
+end
+
+local function ahFireConfirmed(cfg)
+    if not AbilityHook.Enabled then return end
+    if not cfg then return end
+    local now = tick()
+    if now - (AbilityHook._lastFire or 0) < (AbilityHook.Cooldown or 1.0) then return end
+    AbilityHook._lastFire = now
+    if AIM then
+        local dur = (cfg.Lock or 0.6) * (AbilityHook.LockMultiplier or 1.0)
+        AIM.AimFor(dur, cfg.Ability)
+    end
+end
+
+local function ahBindAnimator(char, attempt)
+    attempt = attempt or 1
+    if AbilityHook._animConn then
+        pcall(function() AbilityHook._animConn:Disconnect() end)
+        AbilityHook._animConn = nil
+    end
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local animator = hum and hum:FindFirstChildOfClass("Animator")
+    if not animator then
+        if attempt < 5 then
+            task.delay(0.4, function()
+                if lp.Character == char and AbilityHook.Enabled then
+                    ahBindAnimator(char, attempt + 1)
+                end
+            end)
+        end
+        return
+    end
+    AbilityHook._animConn = animator.AnimationPlayed:Connect(function(track)
+        if lp.Character ~= char then return end
+        local pending = AbilityHook._pendingFire
+        if not pending then return end
+        if tick() - pending.ts > (AbilityHook.PendingWindow or 0.35) then
+            AbilityHook._pendingFire = nil
+            return
+        end
+        local a = track and track.Animation
+        if not a then return end
+        local id = tostring(a.AnimationId):match("%d+")
+        if not id then return end
+        if not ahIsConfirmedPriority(track.Priority) then return end
+        AbilityHook._pendingFire = nil
+        ahFireConfirmed(pending.cfg)
+    end)
 end
 
 local function ahFireButtonAim(btn, cfg)
@@ -687,14 +780,7 @@ local function ahFireButtonAim(btn, cfg)
     local last = AbilityHook.LastTap[btn]
     if last and now - last < AbilityHook.Debounce then return end
     AbilityHook.LastTap[btn] = now
-
-    if now - (AbilityHook._lastFire or 0) < (AbilityHook.Cooldown or 1.0) then return end
-    AbilityHook._lastFire = now
-
-    if AIM then
-        local dur = (cfg.Lock or 0.6) * (AbilityHook.LockMultiplier or 1.0)
-        AIM.AimFor(dur, cfg.Ability)
-    end
+    AbilityHook._pendingFire = { cfg = cfg, ts = now }
 end
 
 local function ahHookButton(btn, cfg)
@@ -705,7 +791,6 @@ local function ahHookButton(btn, cfg)
     local function fire() ahFireButtonAim(btn, cfg) end
 
     pcall(function() btn.Activated:Connect(fire) end)
-
     pcall(function()
         btn.InputEnded:Connect(function(input)
             if input.UserInputType ~= Enum.UserInputType.MouseButton1
@@ -722,23 +807,10 @@ local function ahHookButton(btn, cfg)
             fire()
         end)
     end)
-
-    if AIM and AIM.Debug then
-        print("[ah] hooked stun button: " .. tostring(btn.Name))
-    end
 end
 
-local ABILITY_KEYWORDS = {
-    Chance     = { "shoot", "gun", "oneshot", "one shot", "flint", "pistol", "revolver" },
-    Shedletsky = { "slash", "sword" },
-    TwoTime    = { "dagger", "stab", "knife" },
-    Guest1337  = { "punch", "fist" },
-    JaneDoe    = { "hatchet", "axe" },
-}
-
-local function ahButtonMatches(btn, cfg, charName)
+local function ahButtonMatches(btn, cfg, kws)
     if btn.Name == cfg.Button then return true end
-    local kws = ABILITY_KEYWORDS[charName]
     if not kws then return false end
     local blobs = { string.lower(tostring(btn.Name or "")) }
     if btn:IsA("TextButton") or btn:IsA("TextLabel") then
@@ -760,28 +832,27 @@ end
 
 local function ahScanContainer()
     if not AbilityHook.Enabled then return end
-    local cfg = ahStunConfigForCurrentChar()
-    if not cfg then return end
-    local charName = lp.Character
-        and (lp.Character:GetAttribute("CharacterName") or lp.Character.Name)
-        or ""
+    local info = ahResolveForChar()
+    if not info then return end
+    local cfg, kws = info.cfg, info.kws
     local pg = lp:FindFirstChild("PlayerGui")
     if not pg then return end
 
     local main = pg:FindFirstChild("MainUI")
-    local container = main and main:FindFirstChild("AbilityContainer")
+    if not main then return end
+    local container = main:FindFirstChild("AbilityContainer")
 
     local function try(btn)
-        if btn:IsA("GuiButton") and ahButtonMatches(btn, cfg, charName) then
+        if btn:IsA("GuiButton") and ahButtonMatches(btn, cfg, kws) then
             ahHookButton(btn, cfg)
         end
     end
 
     if container then
         for _, c in ipairs(container:GetChildren()) do try(c) end
+        return
     end
-
-    for _, d in ipairs(pg:GetDescendants()) do
+    for _, d in ipairs(main:GetDescendants()) do
         if d:IsA("GuiButton") then try(d) end
     end
 end
@@ -796,23 +867,28 @@ local function ahInstallUiWatcher()
     AbilityHook._uiWatcher = pg.DescendantAdded:Connect(function(d)
         if not AbilityHook.Enabled then return end
         if not d:IsA("GuiButton") then return end
-        local cfg = ahStunConfigForCurrentChar()
-        if not cfg then return end
-        local charName = lp.Character
-            and (lp.Character:GetAttribute("CharacterName") or lp.Character.Name)
-            or ""
-        if ahButtonMatches(d, cfg, charName) then
-            ahHookButton(d, cfg)
+        local info = ahResolveForChar()
+        if not info then return end
+        if ahButtonMatches(d, info.cfg, info.kws) then
+            ahHookButton(d, info.cfg)
         end
     end)
 end
 
-lp.CharacterAdded:Connect(function()
+lp.CharacterAdded:Connect(function(char)
     AbilityHook.Hooked = {}
     AbilityHook.LastTap = {}
+    AbilityHook._pendingFire = nil
+    ahBindAnimator(char)
     task.wait(0.6)
     ahScanContainer()
 end)
+
+do
+    if lp.Character then
+        ahBindAnimator(lp.Character)
+    end
+end
 
 task.spawn(function()
     while true do
@@ -862,18 +938,21 @@ end)
 -- esp
 local espTrackers = { Killers = {}, Survivors = {}, Generators = {}, Items = {} }
 
-local function attachHighlight(model, fill, outline, transparency, tracker)
+local function attachHighlight(model, fill, outline, transparency, tracker, adornee)
     if not model or not model.Parent then return end
     local existing = tracker[model]
+    local target = adornee or model
     if existing and existing.Parent then
+        existing.Adornee = target
         existing.FillColor = fill
         existing.OutlineColor = outline or fill
+        existing.FillTransparency = transparency or 0.65
         return
     end
     if existing then tracker[model] = nil end
     local hl = Instance.new("Highlight")
     hl.Name = "HunterESP"
-    hl.Adornee = model
+    hl.Adornee = target
     hl.FillColor = fill
     hl.OutlineColor = outline or fill
     hl.FillTransparency = transparency or 0.65
@@ -949,8 +1028,12 @@ local function refreshItems()
     for _, item in ipairs(ingame:GetDescendants()) do
         local c = ITEM_COLORS[item.Name]
         if c and item:IsA("Tool") then
-            seen[item] = true
-            attachHighlight(item, c, c, 0.5, espTrackers.Items)
+            local handle = item:FindFirstChild("Handle")
+            -- FIX: Highlight.Adornee can't be a Tool. Use the Handle BasePart.
+            if handle and handle:IsA("BasePart") then
+                seen[item] = true
+                attachHighlight(item, c, c, 0.5, espTrackers.Items, handle)
+            end
         end
     end
     for m in pairs(espTrackers.Items) do
@@ -1133,7 +1216,9 @@ local function stabBindAnimator()
         local a = track and track.Animation
         if not a then return end
         local id = tostring(a.AnimationId):match("%d+")
-        if id and DAGGER_ANIM_IDS[id] then stabActivate() end
+        if id and DAGGER_ANIM_IDS[id] then
+            task.spawn(stabActivate)
+        end
     end)
 end
 
@@ -1269,14 +1354,17 @@ local function hbeStartDrag()
     bv.MaxForce = Vector3.new(1e5, 0, 1e5); bv.Velocity = Vector3.zero
     bv.Parent = hrp; HBE._dragBV = bv
     HBE._dragConn = RunService.Heartbeat:Connect(function()
-        if not HBE.Enabled or HBE.Mode ~= "Velocity" then
-            hbeStopDrag()
-            if hum and hum.Parent and HBE._dragOrigin then
-                hum.WalkSpeed = HBE._dragOrigin.walk
-                hum.JumpPower = HBE._dragOrigin.jump
-                hum.AutoRotate = HBE._dragOrigin.autoRot
+        -- FIX: guard _dragOrigin before indexing
+        local origin = HBE._dragOrigin
+        local function restore()
+            if hum and hum.Parent and origin then
+                hum.WalkSpeed = origin.walk
+                hum.JumpPower = origin.jump
+                hum.AutoRotate = origin.autoRot
             end
-            return
+        end
+        if not HBE.Enabled or HBE.Mode ~= "Velocity" then
+            hbeStopDrag(); restore(); return
         end
         local k = nearestKillerPart()
         if not k or not k.Parent then bv.Velocity = Vector3.zero return end
@@ -1284,13 +1372,7 @@ local function hbeStartDrag()
         local horiz = Vector3.new(delta.X, 0, delta.Z)
         local dist = horiz.Magnitude
         if dist < HBE.VelocityStopDist then
-            bv.Velocity = Vector3.zero; hbeStopDrag()
-            if hum and hum.Parent and HBE._dragOrigin then
-                hum.WalkSpeed = HBE._dragOrigin.walk
-                hum.JumpPower = HBE._dragOrigin.jump
-                hum.AutoRotate = HBE._dragOrigin.autoRot
-            end
-            return
+            bv.Velocity = Vector3.zero; hbeStopDrag(); restore(); return
         end
         local dir = horiz.Unit
         bv.Velocity = Vector3.new(dir.X * HBE.VelocitySpeed, 0, dir.Z * HBE.VelocitySpeed)
@@ -1407,7 +1489,9 @@ end
 
 local function hbeStart()
     HBE.Enabled = true
-    hbeHookCharacter(lp.Character)
+    if lp.Character then
+        hbeHookCharacter(lp.Character)
+    end
 end
 
 local function hbeStop()
@@ -1449,18 +1533,29 @@ FacingVisual = {
 }
 
 local function fvSniffGameBoxStyle()
-    for _, d in ipairs(workspace:GetDescendants()) do
-        if d:IsA("BasePart") and (d.Name:lower():find("hitbox") or d:FindFirstChild("HitboxHighlight")) then
-            local hl = d:FindFirstChild("HitboxHighlight") or d:FindFirstChildOfClass("Highlight")
-            if hl then
-                return {
-                    Material = d.Material, Transparency = d.Transparency,
-                    HighlightFillTransparency = hl.FillTransparency,
-                    HighlightOutlineTransparency = hl.OutlineTransparency,
-                    DepthMode = hl.DepthMode,
-                }
+    local roots = {}
+    local map = workspace:FindFirstChild("Map")
+    if map then roots[#roots + 1] = map end
+    if KillersFolder then roots[#roots + 1] = KillersFolder end
+    local scanned = 0
+    for _, root in ipairs(roots) do
+        local stopped = false
+        for _, d in ipairs(root:GetDescendants()) do
+            scanned += 1
+            if scanned > 2000 then stopped = true break end
+            if d:IsA("BasePart") and (d.Name:lower():find("hitbox") or d:FindFirstChild("HitboxHighlight")) then
+                local hl = d:FindFirstChild("HitboxHighlight") or d:FindFirstChildOfClass("Highlight")
+                if hl then
+                    return {
+                        Material = d.Material, Transparency = d.Transparency,
+                        HighlightFillTransparency = hl.FillTransparency,
+                        HighlightOutlineTransparency = hl.OutlineTransparency,
+                        DepthMode = hl.DepthMode,
+                    }
+                end
             end
         end
+        if stopped then break end
     end
     return {
         Material = Enum.Material.ForceField, Transparency = 0.5,
@@ -1642,183 +1737,169 @@ if KillersFolder then
 end
 
 -- =========================================================
--- UI (WindUI)
+-- UI (Fluent)
 -- =========================================================
 
-local ICON_WINDOW    = "rbxassetid://10709790644"  -- sword / weapon
-local ICON_ESP       = "rbxassetid://6031075931"   -- eye
-local ICON_STAM      = "rbxassetid://10709797008"  -- generic
-local ICON_AUTOBLOCK = "rbxassetid://6031075927"   -- shield
-local ICON_HDT       = "rbxassetid://10709791806"  -- wrench
-local ICON_AIM       = "rbxassetid://10709794992"  -- crosshair / weapon
-local ICON_BOX       = "rbxassetid://10709797008"  -- generic
-local ICON_STAB      = "rbxassetid://10709790644"  -- sword
-local ICON_MISC      = "rbxassetid://10709791806"  -- wrench / tool
-
-local Window = WindUI:CreateWindow({
+local Window = Fluent:CreateWindow({
     Title = "hunter",
-    Icon = ICON_WINDOW,
-    Author = "gg",
-    Folder = "hunter",
-    Size = UDim2.fromOffset(580, 460),
-    Transparent = true,
+    SubTitle = "gg",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(620, 500),
+    Acrylic = true,
     Theme = "Dark",
-    User = { Enabled = false, Anonymous = true },
-    SideBarWidth = 200,
-    HasOutline = false,
-    KeySystem = false,
+    MinimizeKey = Enum.KeyCode.RightControl,
 })
 
-local function firstOpt(opt, default)
-    if type(opt) == "table" then return opt[1] or default end
-    return opt or default
-end
+local Tabs = {
+    ESP       = Window:AddTab({ Title = "esp",         Icon = "eye" }),
+    Stam      = Window:AddTab({ Title = "stam",        Icon = "zap" }),
+    AutoBlock = Window:AddTab({ Title = "auto block",  Icon = "shield" }),
+    HDT       = Window:AddTab({ Title = "hdt",         Icon = "move" }),
+    Aim       = Window:AddTab({ Title = "aim",         Icon = "target" }),
+    Box       = Window:AddTab({ Title = "box",         Icon = "box" }),
+    Stab      = Window:AddTab({ Title = "stab",        Icon = "sword" }),
+    Misc      = Window:AddTab({ Title = "misc",        Icon = "settings" }),
+}
 
--- esp
-local ESPTab = Window:Tab({ Title = "esp", Icon = ICON_ESP })
-ESPTab:Section({ Title = "players" })
-ESPTab:Toggle({
-    Title = "killer", Value = false, Flag = "ESP_Killers",
+-- ESP
+Tabs.ESP:AddSection("players")
+Tabs.ESP:AddToggle("ESP_Killers", {
+    Title = "killer", Default = false,
     Callback = function(v) CFG.ESPKillers = v if v then refreshKillers() else clearKillerESP() end end,
 })
-ESPTab:Toggle({
-    Title = "survivor", Value = false, Flag = "ESP_Survivors",
+Tabs.ESP:AddToggle("ESP_Survivors", {
+    Title = "survivor", Default = false,
     Callback = function(v) CFG.ESPSurvivors = v if v then refreshSurvivors() else clearSurvivorESP() end end,
 })
-ESPTab:Section({ Title = "world" })
-ESPTab:Toggle({
-    Title = "generators", Value = false, Flag = "ESP_Generators",
+Tabs.ESP:AddSection("world")
+Tabs.ESP:AddToggle("ESP_Generators", {
+    Title = "generators", Default = false,
     Callback = function(v) CFG.ESPGenerators = v if v then refreshGenerators() else clearGeneratorESP() end end,
 })
-ESPTab:Toggle({
-    Title = "items", Value = false, Flag = "ESP_Items",
+Tabs.ESP:AddToggle("ESP_Items", {
+    Title = "items", Default = false,
     Callback = function(v) CFG.ESPItems = v if v then refreshItems() else clearItemESP() end end,
 })
 
--- stam
-local StamTab = Window:Tab({ Title = "stam", Icon = ICON_STAM })
-StamTab:Section({ Title = "sprint" })
+-- STAM
+Tabs.Stam:AddSection("sprint")
 if not Sprinting then
-    StamTab:Paragraph({ Title = "n/a", Desc = "no sprinting module" })
+    Tabs.Stam:AddParagraph({ Title = "n/a", Content = "no sprinting module found" })
 else
-    StamTab:Toggle({
-        Title = "inf stam", Value = false, Flag = "InfStam",
+    Tabs.Stam:AddToggle("InfStam", {
+        Title = "infinite stamina", Default = false,
         Callback = function(v) CFG.InfiniteStamina = v if v then startInfiniteStamina() else stopInfiniteStamina() end end,
     })
-    StamTab:Slider({
-        Title = "max", Value = { Min = 1, Max = 1000, Default = Sprinting.MaxStamina or 100 }, Flag = "Stam_Max",
+    Tabs.Stam:AddSlider("Stam_Max", {
+        Title = "max", Default = Sprinting.MaxStamina or 100, Min = 1, Max = 1000, Rounding = 0,
         Callback = function(v) if Sprinting then Sprinting.MaxStamina = v end end,
     })
-    StamTab:Slider({
-        Title = "speed", Value = { Min = 1, Max = 40, Default = Sprinting.SprintSpeed or 26 }, Flag = "Stam_Speed",
+    Tabs.Stam:AddSlider("Stam_Speed", {
+        Title = "sprint speed", Default = Sprinting.SprintSpeed or 26, Min = 1, Max = 40, Rounding = 0,
         Callback = function(v) if Sprinting then Sprinting.SprintSpeed = v end end,
     })
-    StamTab:Slider({
-        Title = "gain", Value = { Min = 1, Max = 200, Default = Sprinting.StaminaGain or 20 }, Flag = "Stam_Gain",
+    Tabs.Stam:AddSlider("Stam_Gain", {
+        Title = "gain", Default = Sprinting.StaminaGain or 20, Min = 1, Max = 200, Rounding = 0,
         Callback = function(v) if Sprinting then Sprinting.StaminaGain = v end end,
     })
-    StamTab:Slider({
-        Title = "loss", Value = { Min = 0, Max = 50, Default = Sprinting.StaminaLoss or 10, Rounding = 1 }, Flag = "Stam_Loss",
+    Tabs.Stam:AddSlider("Stam_Loss", {
+        Title = "loss", Default = Sprinting.StaminaLoss or 10, Min = 0, Max = 50, Rounding = 1,
         Callback = function(v) if Sprinting then Sprinting.StaminaLoss = v end end,
     })
 end
 
--- auto block
-local ABTab = Window:Tab({ Title = "auto block", Icon = ICON_AUTOBLOCK })
-ABTab:Toggle({
-    Title = "on", Value = false, Flag = "AutoBlock",
+-- AUTO BLOCK
+Tabs.AutoBlock:AddToggle("AutoBlock", {
+    Title = "enabled", Default = false,
     Callback = function(v) CFG.AutoBlockEnabled = v end,
 })
-ABTab:Paragraph({
+Tabs.AutoBlock:AddParagraph({
     Title = "info",
-    Desc = "auto block only fires when YOU are inside the killer's box (their forward view cone)",
+    Content = "auto block only fires when YOU are inside the killer's forward view cone.",
 })
-ABTab:Slider({
-    Title = "range", Value = { Min = 8, Max = 60, Default = CFG.DetectionRange }, Flag = "AB_Range",
+Tabs.AutoBlock:AddSlider("AB_Range", {
+    Title = "range", Default = CFG.DetectionRange, Min = 8, Max = 60, Rounding = 0,
     Callback = function(v) CFG.DetectionRange = v end,
 })
-ABTab:Slider({
-    Title = "delay", Value = { Min = 0, Max = 0.5, Default = 0, Rounding = 2 }, Flag = "AB_Delay",
+Tabs.AutoBlock:AddSlider("AB_Delay", {
+    Title = "delay", Default = 0, Min = 0, Max = 0.5, Rounding = 2,
     Callback = function(v) CFG.BlockDelay = v end,
 })
-ABTab:Section({ Title = "triggers" })
-ABTab:Toggle({
-    Title = "sound", Value = true, Flag = "AB_Sound",
+Tabs.AutoBlock:AddSection("triggers")
+Tabs.AutoBlock:AddToggle("AB_Sound", {
+    Title = "sound", Default = true,
     Callback = function(v) CFG.SoundTrigger = v end,
 })
-ABTab:Toggle({
-    Title = "anim", Value = true, Flag = "AB_Anim",
+Tabs.AutoBlock:AddToggle("AB_Anim", {
+    Title = "animation", Default = true,
     Callback = function(v) CFG.AnimTrigger = v end,
 })
-ABTab:Section({ Title = "filters" })
-ABTab:Toggle({
-    Title = "wall", Value = true, Flag = "AB_Wall",
+Tabs.AutoBlock:AddSection("filters")
+Tabs.AutoBlock:AddToggle("AB_Wall", {
+    Title = "wall check", Default = true,
     Callback = function(v) CFG.WallCheck = v end,
 })
-ABTab:Toggle({
-    Title = "facing", Value = true, Flag = "AB_Facing",
+Tabs.AutoBlock:AddToggle("AB_Facing", {
+    Title = "facing check", Default = true,
     Callback = function(v) CFG.FacingCheck = v end,
 })
-ABTab:Slider({
-    Title = "facing dot", Value = { Min = -1, Max = 1, Default = CFG.FacingDot, Rounding = 2 }, Flag = "AB_FacingDot",
+Tabs.AutoBlock:AddSlider("AB_FacingDot", {
+    Title = "facing dot", Default = CFG.FacingDot, Min = -1, Max = 1, Rounding = 2,
     Callback = function(v) CFG.FacingDot = v end,
 })
 
--- hdt
-local HDTTab = Window:Tab({ Title = "hdt", Icon = ICON_HDT })
-HDTTab:Toggle({
-    Title = "on", Value = false, Flag = "HDT_On",
+-- HDT
+Tabs.HDT:AddToggle("HDT_On", {
+    Title = "enabled", Default = false,
     Callback = function(v) HDT.Enabled = v end,
 })
-HDTTab:Toggle({
-    Title = "auto on block", Value = true, Flag = "HDT_Auto",
+Tabs.HDT:AddToggle("HDT_Auto", {
+    Title = "auto on block", Default = true,
     Callback = function(v) HDT.AutoTrigger = v end,
 })
-HDTTab:Slider({
-    Title = "speed", Value = { Min = 2, Max = 40, Default = HDT.Speed, Rounding = 1 }, Flag = "HDT_Speed",
+Tabs.HDT:AddSlider("HDT_Speed", {
+    Title = "speed", Default = HDT.Speed, Min = 2, Max = 40, Rounding = 1,
     Callback = function(v) HDT.Speed = v end,
 })
-HDTTab:Slider({
-    Title = "delay", Value = { Min = 0, Max = 2, Default = HDT.Delay, Rounding = 2 }, Flag = "HDT_Delay",
+Tabs.HDT:AddSlider("HDT_Delay", {
+    Title = "delay", Default = HDT.Delay, Min = 0, Max = 2, Rounding = 2,
     Callback = function(v) HDT.Delay = v end,
 })
-HDTTab:Slider({
-    Title = "stop", Value = { Min = 1, Max = 8, Default = HDT.StopDistance, Rounding = 1 }, Flag = "HDT_Stop",
+Tabs.HDT:AddSlider("HDT_Stop", {
+    Title = "stop distance", Default = HDT.StopDistance, Min = 1, Max = 8, Rounding = 1,
     Callback = function(v) HDT.StopDistance = v end,
 })
-HDTTab:Slider({
-    Title = "max drag time", Value = { Min = 0.2, Max = 3, Default = HDT.SafetyTimeout, Rounding = 2 }, Flag = "HDT_Timeout",
+Tabs.HDT:AddSlider("HDT_Timeout", {
+    Title = "max drag time", Default = HDT.SafetyTimeout, Min = 0.2, Max = 3, Rounding = 2,
     Callback = function(v) HDT.SafetyTimeout = v end,
 })
-HDTTab:Slider({
-    Title = "re-trigger cd", Value = { Min = 0, Max = 5, Default = HDT.ReTriggerCooldown, Rounding = 2 }, Flag = "HDT_ReCD",
+Tabs.HDT:AddSlider("HDT_ReCD", {
+    Title = "re-trigger cd", Default = HDT.ReTriggerCooldown, Min = 0, Max = 5, Rounding = 2,
     Callback = function(v) HDT.ReTriggerCooldown = v end,
 })
-HDTTab:Keybind({
-    Title = "manual", Value = Enum.KeyCode.Q,
+Tabs.HDT:AddKeybind("HDT_Manual", {
+    Title = "manual trigger", Default = Enum.KeyCode.Q,
     Callback = function() HDT.Trigger() end,
 })
 
--- aim
-local AimTab = Window:Tab({ Title = "aim", Icon = ICON_AIM })
-
-AimTab:Section({ Title = "main" })
-AimTab:Toggle({
-    Title = "on", Value = false, Flag = "Aim_On",
+-- AIM
+Tabs.Aim:AddSection("main")
+Tabs.Aim:AddToggle("Aim_On", {
+    Title = "enabled", Default = false,
     Callback = function(v) AIM.Enabled = v end,
 })
-AimTab:Keybind({
-    Title = "pulse 3s", Value = Enum.KeyCode.C,
+Tabs.Aim:AddKeybind("Aim_Pulse", {
+    Title = "pulse 3s", Default = Enum.KeyCode.C,
     Callback = function() AIM.AimFor(3.0) end,
 })
-AimTab:Toggle({
-    Title = "debug", Value = false, Flag = "Aim_Debug",
+Tabs.Aim:AddToggle("Aim_Debug", {
+    Title = "debug", Default = false,
     Callback = function(v) AIM.Debug = v end,
 })
 
-AimTab:Section({ Title = "button hook" })
-AimTab:Toggle({
-    Title = "aim on stun tap", Value = true, Flag = "Aim_BtnHook",
+Tabs.Aim:AddSection("button hook")
+Tabs.Aim:AddToggle("Aim_BtnHook", {
+    Title = "aim on stun tap", Default = true,
     Callback = function(v)
         AbilityHook.Enabled = v
         if v then
@@ -1827,60 +1908,61 @@ AimTab:Toggle({
         end
     end,
 })
-AimTab:Slider({
-    Title = "ability cooldown", Value = { Min = 1, Max = 60, Default = AbilityHook.Cooldown, Rounding = 1 }, Flag = "Aim_BtnCooldown",
+Tabs.Aim:AddSlider("Aim_BtnCooldown", {
+    Title = "ability cooldown", Default = AbilityHook.Cooldown, Min = 1, Max = 60, Rounding = 1,
     Callback = function(v) AbilityHook.Cooldown = v end,
 })
-AimTab:Paragraph({
-    Title = "info",
-    Desc = "cooldown between aim triggers. Fires only on stun abilities: chance shoot / shed slash / two time dagger / guest punch / jane hatchet",
+Tabs.Aim:AddSlider("Aim_BtnWindow", {
+    Title = "confirm window", Default = AbilityHook.PendingWindow, Min = 0.1, Max = 1.0, Rounding = 2,
+    Callback = function(v) AbilityHook.PendingWindow = v end,
 })
-AimTab:Slider({
-    Title = "lock multiplier",
-    Value = { Min = 0.5, Max = 4, Default = AbilityHook.LockMultiplier, Rounding = 1 },
-    Flag = "Aim_LockMult",
+Tabs.Aim:AddParagraph({
+    Title = "info",
+    Content = "aim fires only after the ability's Action animation actually plays. window = max wait after the tap.",
+})
+Tabs.Aim:AddSlider("Aim_LockMult", {
+    Title = "lock multiplier", Default = AbilityHook.LockMultiplier, Min = 0.5, Max = 4, Rounding = 1,
     Callback = function(v) AbilityHook.LockMultiplier = v end,
 })
 
-AimTab:Section({ Title = "mode" })
-AimTab:Dropdown({
+Tabs.Aim:AddSection("mode")
+Tabs.Aim:AddDropdown("Aim_Mode", {
     Title = "aim mode",
     Values = { "Camera", "HRP", "HRP+Camera" },
-    Value = "Camera",
-    Flag = "Aim_Mode",
-    Callback = function(opt) AIM.AimMode = firstOpt(opt, "Camera") end,
+    Default = "Camera",
+    Multi = false,
+    Callback = function(opt) AIM.AimMode = opt end,
 })
-AimTab:Slider({
-    Title = "smooth", Value = { Min = 0.05, Max = 1, Default = AIM.Smooth, Rounding = 2 }, Flag = "Aim_Smooth",
+Tabs.Aim:AddSlider("Aim_Smooth", {
+    Title = "smooth", Default = AIM.Smooth, Min = 0.05, Max = 1, Rounding = 2,
     Callback = function(v) AIM.Smooth = v end,
 })
 
-AimTab:Section({ Title = "prediction" })
-AimTab:Dropdown({
-    Title = "pred mode",
+Tabs.Aim:AddSection("prediction")
+Tabs.Aim:AddDropdown("Aim_PredictMode", {
+    Title = "prediction mode",
     Values = { "Off", "Ping", "Velocity", "Both" },
-    Value = "Both",
-    Flag = "Aim_PredictMode",
-    Callback = function(opt) AIM.PredictMode = firstOpt(opt, "Both") end,
+    Default = "Both",
+    Multi = false,
+    Callback = function(opt) AIM.PredictMode = opt end,
 })
-AimTab:Slider({
-    Title = "vel lead", Value = { Min = 0, Max = 0.5, Default = AIM.PredictLead, Rounding = 2 }, Flag = "Aim_PredictLead",
+Tabs.Aim:AddSlider("Aim_PredictLead", {
+    Title = "velocity lead", Default = AIM.PredictLead, Min = 0, Max = 0.5, Rounding = 2,
     Callback = function(v) AIM.PredictLead = v end,
 })
-AimTab:Slider({
-    Title = "ping mult", Value = { Min = 0, Max = 2, Default = AIM.PingMult, Rounding = 2 }, Flag = "Aim_PingMult",
+Tabs.Aim:AddSlider("Aim_PingMult", {
+    Title = "ping mult", Default = AIM.PingMult, Min = 0, Max = 2, Rounding = 2,
     Callback = function(v) AIM.PingMult = v end,
 })
 
--- box
-local BoxTab = Window:Tab({ Title = "box", Icon = ICON_BOX })
-BoxTab:Section({ Title = "box check" })
-BoxTab:Toggle({
-    Title = "on", Value = false, Flag = "FV_Box",
+-- BOX
+Tabs.Box:AddSection("box check")
+Tabs.Box:AddToggle("FV_Box", {
+    Title = "enabled", Default = false,
     Callback = function(v)
         FacingVisual.BoxEnabled = v
         if not v then
-            for k, data in pairs(FacingVisual.boxVisuals) do
+            for _, data in pairs(FacingVisual.boxVisuals) do
                 if data.highlight and data.highlight.Parent then pcall(function() data.highlight:Destroy() end) end
                 if data.part and data.part.Parent then pcall(function() data.part:Destroy() end) end
             end
@@ -1888,75 +1970,73 @@ BoxTab:Toggle({
         end
     end,
 })
-BoxTab:Toggle({
-    Title = "flash on m1", Value = true, Flag = "FV_FlashM1",
+Tabs.Box:AddToggle("FV_FlashM1", {
+    Title = "flash on killer m1", Default = true,
     Callback = function(v) FacingVisual.FlashOnKillerM1 = v end,
 })
 
-BoxTab:Section({ Title = "size" })
-BoxTab:Slider({
-    Title = "width", Value = { Min = 0, Max = 30, Default = FacingVisual.BoxWidth, Rounding = 1 }, Flag = "FV_BoxWidth",
+Tabs.Box:AddSection("size")
+Tabs.Box:AddSlider("FV_BoxWidth", {
+    Title = "width", Default = FacingVisual.BoxWidth, Min = 0, Max = 30, Rounding = 1,
     Callback = function(v) FacingVisual.BoxWidth = v end,
 })
-BoxTab:Slider({
-    Title = "length", Value = { Min = 0, Max = 30, Default = FacingVisual.BoxLength, Rounding = 1 }, Flag = "FV_BoxLength",
+Tabs.Box:AddSlider("FV_BoxLength", {
+    Title = "length", Default = FacingVisual.BoxLength, Min = 0, Max = 30, Rounding = 1,
     Callback = function(v) FacingVisual.BoxLength = v end,
 })
-BoxTab:Slider({
-    Title = "height", Value = { Min = 0, Max = 30, Default = FacingVisual.BoxHeight, Rounding = 1 }, Flag = "FV_BoxHeight",
+Tabs.Box:AddSlider("FV_BoxHeight", {
+    Title = "height", Default = FacingVisual.BoxHeight, Min = 0, Max = 30, Rounding = 1,
     Callback = function(v) FacingVisual.BoxHeight = v end,
 })
-BoxTab:Toggle({
-    Title = "auto width", Value = false, Flag = "FV_AutoWidth",
+Tabs.Box:AddToggle("FV_AutoWidth", {
+    Title = "auto width", Default = false,
     Callback = function(v) FacingVisual.AutoWidth = v end,
 })
 
-BoxTab:Section({ Title = "look" })
-BoxTab:Slider({
-    Title = "transparency", Value = { Min = 0, Max = 0.95, Default = FacingVisual.BoxFill, Rounding = 2 }, Flag = "FV_BoxFill",
+Tabs.Box:AddSection("look")
+Tabs.Box:AddSlider("FV_BoxFill", {
+    Title = "transparency", Default = FacingVisual.BoxFill, Min = 0, Max = 0.95, Rounding = 2,
     Callback = function(v) FacingVisual.BoxFill = v end,
 })
-BoxTab:Colorpicker({
-    Title = "pass color",
-    Default = FacingVisual.PassColor, Flag = "FV_PassColor",
+Tabs.Box:AddColorpicker("FV_PassColor", {
+    Title = "pass color", Default = FacingVisual.PassColor,
     Callback = function(c) FacingVisual.PassColor = c end,
 })
-BoxTab:Colorpicker({
-    Title = "in range color",
-    Default = FacingVisual.InRangeColor, Flag = "FV_InRangeColor",
+Tabs.Box:AddColorpicker("FV_InRangeColor", {
+    Title = "in range color", Default = FacingVisual.InRangeColor,
     Callback = function(c) FacingVisual.InRangeColor = c end,
 })
-BoxTab:Colorpicker({
-    Title = "out range color",
-    Default = FacingVisual.OutRangeColor, Flag = "FV_OutRangeColor",
+Tabs.Box:AddColorpicker("FV_OutRangeColor", {
+    Title = "out range color", Default = FacingVisual.OutRangeColor,
     Callback = function(c) FacingVisual.OutRangeColor = c end,
 })
 
-BoxTab:Section({ Title = "timing" })
-BoxTab:Slider({
-    Title = "flash", Value = { Min = 0.05, Max = 1.0, Default = FacingVisual.FlashDuration, Rounding = 2 }, Flag = "FV_FlashDur",
+Tabs.Box:AddSection("timing")
+Tabs.Box:AddSlider("FV_FlashDur", {
+    Title = "flash duration", Default = FacingVisual.FlashDuration, Min = 0.05, Max = 1.0, Rounding = 2,
     Callback = function(v) FacingVisual.FlashDuration = v end,
 })
-BoxTab:Slider({
-    Title = "fade", Value = { Min = 0.0, Max = 1.0, Default = FacingVisual.FlashFade, Rounding = 2 }, Flag = "FV_FlashFade",
+Tabs.Box:AddSlider("FV_FlashFade", {
+    Title = "fade", Default = FacingVisual.FlashFade, Min = 0.0, Max = 1.0, Rounding = 2,
     Callback = function(v) FacingVisual.FlashFade = v end,
 })
 
-BoxTab:Section({ Title = "extra" })
-BoxTab:Toggle({
-    Title = "on enter range", Value = false, Flag = "FV_FlashEnter",
+Tabs.Box:AddSection("extra")
+Tabs.Box:AddToggle("FV_FlashEnter", {
+    Title = "flash on enter range", Default = false,
     Callback = function(v) FacingVisual.FlashOnEnterRange = v end,
 })
-BoxTab:Toggle({
-    Title = "on facing flip", Value = false, Flag = "FV_FlashFlip",
+Tabs.Box:AddToggle("FV_FlashFlip", {
+    Title = "flash on facing flip", Default = false,
     Callback = function(v) FacingVisual.FlashOnFacingFlip = v end,
 })
-BoxTab:Toggle({
-    Title = "on block fire", Value = false, Flag = "FV_FlashBlock",
+Tabs.Box:AddToggle("FV_FlashBlock", {
+    Title = "flash on block fire", Default = false,
     Callback = function(v) FacingVisual.FlashOnBlock = v end,
 })
-BoxTab:Button({
+Tabs.Box:AddButton({
     Title = "reset 6/15/6",
+    Description = "restore default box dimensions",
     Callback = function()
         FacingVisual.BoxWidth = 6
         FacingVisual.BoxLength = 15
@@ -1965,118 +2045,113 @@ BoxTab:Button({
     end,
 })
 
--- stab
-local StabTab = Window:Tab({ Title = "stab", Icon = ICON_STAB })
-StabTab:Toggle({
-    Title = "on", Value = false, Flag = "Stab_On",
+-- STAB
+Tabs.Stab:AddToggle("Stab_On", {
+    Title = "enabled", Default = false,
     Callback = function(v) STAB.Enabled = v end,
 })
-StabTab:Keybind({
-    Title = "manual", Value = Enum.KeyCode.H,
-    Callback = function() stabActivate() end,
+Tabs.Stab:AddKeybind("Stab_Manual", {
+    Title = "manual stab", Default = Enum.KeyCode.H,
+    Callback = function() task.spawn(stabActivate) end,
 })
-StabTab:Slider({
-    Title = "behind", Value = { Min = 0.5, Max = 6, Default = STAB.BehindOffset, Rounding = 1 }, Flag = "Stab_Offset",
+Tabs.Stab:AddSlider("Stab_Offset", {
+    Title = "behind offset", Default = STAB.BehindOffset, Min = 0.5, Max = 6, Rounding = 1,
     Callback = function(v) STAB.BehindOffset = v end,
 })
-StabTab:Slider({
-    Title = "range", Value = { Min = 10, Max = 150, Default = STAB.MaxRange }, Flag = "Stab_Range",
+Tabs.Stab:AddSlider("Stab_Range", {
+    Title = "max range", Default = STAB.MaxRange, Min = 10, Max = 150, Rounding = 0,
     Callback = function(v) STAB.MaxRange = v end,
 })
-StabTab:Slider({
-    Title = "cooldown", Value = { Min = 0.1, Max = 2, Default = STAB.Cooldown, Rounding = 2 }, Flag = "Stab_CD",
+Tabs.Stab:AddSlider("Stab_CD", {
+    Title = "cooldown", Default = STAB.Cooldown, Min = 0.1, Max = 2, Rounding = 2,
     Callback = function(v) STAB.Cooldown = v end,
 })
-StabTab:Slider({
-    Title = "tp delay", Value = { Min = 0, Max = 0.2, Default = STAB.TeleportDelay, Rounding = 2 }, Flag = "Stab_TPDelay",
+Tabs.Stab:AddSlider("Stab_TPDelay", {
+    Title = "tp delay", Default = STAB.TeleportDelay, Min = 0, Max = 0.2, Rounding = 2,
     Callback = function(v) STAB.TeleportDelay = v end,
 })
-StabTab:Slider({
-    Title = "follow", Value = { Min = 0.1, Max = 2, Default = STAB.FollowDuration, Rounding = 2 }, Flag = "Stab_Follow",
+Tabs.Stab:AddSlider("Stab_Follow", {
+    Title = "follow duration", Default = STAB.FollowDuration, Min = 0.1, Max = 2, Rounding = 2,
     Callback = function(v) STAB.FollowDuration = v end,
 })
-StabTab:Button({
+Tabs.Stab:AddButton({
     Title = "stab now",
-    Callback = function() stabActivate() end,
+    Description = "trigger stab immediately",
+    Callback = function() task.spawn(stabActivate) end,
 })
 
--- misc
-local MiscTab = Window:Tab({ Title = "misc", Icon = ICON_MISC })
-
-MiscTab:Section({ Title = "theme" })
-MiscTab:Dropdown({
+-- MISC
+Tabs.Misc:AddSection("theme")
+Tabs.Misc:AddDropdown("UI_Theme", {
     Title = "ui theme",
-    Values = { "Dark", "Light", "Rose", "Violet", "Green", "Blue", "Red", "Aqua", "Amethyst", "Sunset" },
-    Value = "Dark",
-    Flag = "UI_Theme",
-    Callback = function(opt)
-        local t = firstOpt(opt, "Dark")
-        pcall(function() WindUI:SetTheme(t) end)
-    end,
+    Values = { "Dark", "Darker", "AMOLED", "Light", "Blue", "Green", "Pink", "Rose", "Aqua", "Violet", "Rainbow" },
+    Default = "Dark",
+    Multi = false,
+    Callback = function(opt) pcall(function() Fluent:SetTheme(opt) end) end,
 })
 
-MiscTab:Section({ Title = "azure" })
-MiscTab:Toggle({
-    Title = "auto qte", Value = false, Flag = "AZ_QTE",
+Tabs.Misc:AddSection("azure")
+Tabs.Misc:AddToggle("AZ_QTE", {
+    Title = "auto qte", Default = false,
     Callback = function(v) AZ.AutoQTE = v if v then azHookQTE() end end,
 })
-MiscTab:Toggle({
-    Title = "inf qte", Value = false, Flag = "AZ_Inf",
+Tabs.Misc:AddToggle("AZ_Inf", {
+    Title = "inf qte", Default = false,
     Callback = function(v) AZ.InfiniteQTE = v if v then azHookQTE() end end,
 })
 
-MiscTab:Section({ Title = "auto gen" })
-MiscTab:Toggle({
-    Title = "on", Value = false, Flag = "Gen_On",
+Tabs.Misc:AddSection("auto generator")
+Tabs.Misc:AddToggle("Gen_On", {
+    Title = "enabled", Default = false,
     Callback = function(v) AUTOGEN.Enabled = v end,
 })
-MiscTab:Slider({
-    Title = "range", Value = { Min = 5, Max = 30, Default = AUTOGEN.MaxDistance }, Flag = "Gen_Range",
+Tabs.Misc:AddSlider("Gen_Range", {
+    Title = "range", Default = AUTOGEN.MaxDistance, Min = 5, Max = 30, Rounding = 0,
     Callback = function(v) AUTOGEN.MaxDistance = v end,
 })
-MiscTab:Slider({
-    Title = "interval", Value = { Min = 0.3, Max = 5, Default = AUTOGEN.Cooldown, Rounding = 1 }, Flag = "Gen_CD",
+Tabs.Misc:AddSlider("Gen_CD", {
+    Title = "interval", Default = AUTOGEN.Cooldown, Min = 0.3, Max = 5, Rounding = 1,
     Callback = function(v) AUTOGEN.Cooldown = v end,
 })
 
-MiscTab:Section({ Title = "hitbox expander" })
-MiscTab:Toggle({
-    Title = "on", Value = false, Flag = "HBE_On",
+Tabs.Misc:AddSection("hitbox expander")
+Tabs.Misc:AddToggle("HBE_On", {
+    Title = "enabled", Default = false,
     Callback = function(v) if v then hbeStart() else hbeStop() end end,
 })
-MiscTab:Dropdown({
+Tabs.Misc:AddDropdown("HBE_Mode", {
     Title = "mode",
     Values = { "Scale", "Velocity" },
-    Value = "Scale",
-    Flag = "HBE_Mode",
+    Default = "Scale",
+    Multi = false,
     Callback = function(opt)
-        local m = firstOpt(opt, "Scale")
-        HBE.Mode = m or "Scale"
+        HBE.Mode = opt or "Scale"
         if HBE.Enabled then hbeStop() hbeStart() end
     end,
 })
-MiscTab:Slider({
-    Title = "mult", Value = { Min = 1, Max = 5, Default = HBE.SizeMultiplier, Rounding = 2 }, Flag = "HBE_Mult",
+Tabs.Misc:AddSlider("HBE_Mult", {
+    Title = "size multiplier", Default = HBE.SizeMultiplier, Min = 1, Max = 5, Rounding = 2,
     Callback = function(v) HBE.SizeMultiplier = v if HBE.Enabled then hbeApply() end end,
 })
-MiscTab:Toggle({
-    Title = "only on attack", Value = false, Flag = "HBE_OnlyAtk",
+Tabs.Misc:AddToggle("HBE_OnlyAtk", {
+    Title = "only on attack", Default = false,
     Callback = function(v)
         HBE.ApplyOnlyOnAttack = v
-        if HBE.Enabled then hbeDisconnectAll() hbeHookCharacter(lp.Character) end
+        if HBE.Enabled and lp.Character then hbeDisconnectAll() hbeHookCharacter(lp.Character) end
     end,
 })
-MiscTab:Toggle({
-    Title = "visualize", Value = false, Flag = "HBE_Visual",
+Tabs.Misc:AddToggle("HBE_Visual", {
+    Title = "visualize", Default = false,
     Callback = function(v) HBE.Visualize = v hbeApplyVisual() end,
 })
-MiscTab:Button({ Title = "1.25x", Callback = function() HBE.SizeMultiplier = 1.25 if HBE.Enabled then hbeApply() end end })
-MiscTab:Button({ Title = "1.5x",  Callback = function() HBE.SizeMultiplier = 1.5  if HBE.Enabled then hbeApply() end end })
-MiscTab:Button({ Title = "2.0x",  Callback = function() HBE.SizeMultiplier = 2.0  if HBE.Enabled then hbeApply() end end })
+Tabs.Misc:AddButton({ Title = "1.25x", Callback = function() HBE.SizeMultiplier = 1.25 if HBE.Enabled then hbeApply() end end })
+Tabs.Misc:AddButton({ Title = "1.50x", Callback = function() HBE.SizeMultiplier = 1.5  if HBE.Enabled then hbeApply() end end })
+Tabs.Misc:AddButton({ Title = "2.00x", Callback = function() HBE.SizeMultiplier = 2.0  if HBE.Enabled then hbeApply() end end })
 
-MiscTab:Section({ Title = "utility" })
-MiscTab:Button({
+Tabs.Misc:AddSection("utility")
+Tabs.Misc:AddButton({
     Title = "fullbright",
+    Description = "make the map bright",
     Callback = function()
         Lighting.Ambient = Color3.new(1,1,1)
         Lighting.OutdoorAmbient = Color3.new(1,1,1)
@@ -2085,7 +2160,7 @@ MiscTab:Button({
         if atmo then atmo:Destroy() end
     end,
 })
-MiscTab:Button({
+Tabs.Misc:AddButton({
     Title = "show chat",
     Callback = function()
         pcall(function()
@@ -2096,15 +2171,15 @@ MiscTab:Button({
         end)
     end,
 })
-MiscTab:Button({
-    Title = "reset",
+Tabs.Misc:AddButton({
+    Title = "reset character",
     Callback = function()
         local char = lp.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if hum then hum.Health = 0 end
     end,
 })
-MiscTab:Button({
+Tabs.Misc:AddButton({
     Title = "anti lag",
     Callback = function()
         task.spawn(function()
@@ -2115,7 +2190,22 @@ MiscTab:Button({
     end,
 })
 
+-- SaveManager / InterfaceManager (persist configs)
+pcall(function()
+    SaveManager:SetLibrary(Fluent)
+    InterfaceManager:SetLibrary(Fluent)
+    SaveManager:IgnoreThemeSettings()
+    SaveManager:SetIgnoreIndexes({})
+    InterfaceManager:SetFolder("hunter")
+    SaveManager:SetFolder("hunter")
+    SaveManager:BuildConfigSection(Tabs.Misc)
+    InterfaceManager:BuildInterfaceSection(Tabs.Misc)
+    SaveManager:LoadAutoloadConfig()
+end)
+
+Window:SelectTab(1)
+
 task.wait(0.4)
 pcall(function()
-    WindUI:Notify({ Title = "hunter", Content = "up", Duration = 3 })
+    Fluent:Notify({ Title = "hunter", Content = "loaded", Duration = 4 })
 end)
