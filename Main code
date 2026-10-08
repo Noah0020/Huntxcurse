@@ -1,13 +1,10 @@
 -- hunter hub
 -- esp / stam / autoblock / hdt / aim / box / stab / misc
--- GUI: PealLib (https://github.com/pealz1/PealLib)
+-- GUI: Rayfield (sirius.menu build)
 
 repeat task.wait() until game:IsLoaded()
 
-local repo = 'https://raw.githubusercontent.com/pealz1/PealLib/main/'
-local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
-local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
-local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -1735,164 +1732,268 @@ if KillersFolder then
 end
 
 -- =========================================================
--- UI (PealLib)
+-- UI (Rayfield)
 -- =========================================================
 
-local Window = Library:CreateWindow({
-    Title = 'hunter',
-    Center = true,
-    AutoShow = true,
+local Window = Rayfield:CreateWindow({
+    Name = "hunter",
+    LoadingTitle = "hunter",
+    LoadingSubtitle = "gg",
+    Theme = "Dark",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "hunter",
+        FileName = "config",
+    },
+    KeySystem = false,
 })
 
-local Tabs = {
-    ESP       = Window:AddTab('esp'),
-    Stam      = Window:AddTab('stam'),
-    AutoBlock = Window:AddTab('auto block'),
-    HDT       = Window:AddTab('hdt'),
-    Aim       = Window:AddTab('aim'),
-    Box       = Window:AddTab('box'),
-    Stab      = Window:AddTab('stab'),
-    Misc      = Window:AddTab('misc'),
-}
+local ESPTab       = Window:CreateTab("esp", 4483362458)
+local StamTab      = Window:CreateTab("stam", 4483362458)
+local AutoBlockTab = Window:CreateTab("auto block", 4483362458)
+local HDTTab       = Window:CreateTab("hdt", 4483362458)
+local AimTab       = Window:CreateTab("aim", 4483362458)
+local BoxTab       = Window:CreateTab("box", 4483362458)
+local StabTab      = Window:CreateTab("stab", 4483362458)
+local MiscTab      = Window:CreateTab("misc", 4483362458)
 
 -- ESP
-local espGroup = Tabs.ESP:AddLeftGroupbox('players')
-espGroup:AddToggle('ESP_Killers', {
-    Text = 'killer', Default = false,
+ESPTab:CreateSection("players")
+ESPTab:CreateToggle({
+    Name = "killer",
+    CurrentValue = false,
+    Flag = "ESP_Killers",
     Callback = function(v) CFG.ESPKillers = v if v then refreshKillers() else clearKillerESP() end end,
 })
-espGroup:AddToggle('ESP_Survivors', {
-    Text = 'survivor', Default = false,
+ESPTab:CreateToggle({
+    Name = "survivor",
+    CurrentValue = false,
+    Flag = "ESP_Survivors",
     Callback = function(v) CFG.ESPSurvivors = v if v then refreshSurvivors() else clearSurvivorESP() end end,
 })
-local espWorldGroup = Tabs.ESP:AddLeftGroupbox('world')
-espWorldGroup:AddToggle('ESP_Generators', {
-    Text = 'generators', Default = false,
+ESPTab:CreateSection("world")
+ESPTab:CreateToggle({
+    Name = "generators",
+    CurrentValue = false,
+    Flag = "ESP_Generators",
     Callback = function(v) CFG.ESPGenerators = v if v then refreshGenerators() else clearGeneratorESP() end end,
 })
-espWorldGroup:AddToggle('ESP_Items', {
-    Text = 'items', Default = false,
+ESPTab:CreateToggle({
+    Name = "items",
+    CurrentValue = false,
+    Flag = "ESP_Items",
     Callback = function(v) CFG.ESPItems = v if v then refreshItems() else clearItemESP() end end,
 })
 
 -- STAM
-local stamGroup = Tabs.Stam:AddLeftGroupbox('sprint')
+StamTab:CreateSection("sprint")
 if not Sprinting then
-    stamGroup:AddLabel('no sprinting module found')
+    StamTab:CreateLabel("no sprinting module found")
 else
-    stamGroup:AddToggle('InfStam', {
-        Text = 'infinite stamina', Default = false,
+    StamTab:CreateToggle({
+        Name = "infinite stamina",
+        CurrentValue = false,
+        Flag = "InfStam",
         Callback = function(v) CFG.InfiniteStamina = v if v then startInfiniteStamina() else stopInfiniteStamina() end end,
     })
-    stamGroup:AddSlider('Stam_Max', {
-        Text = 'max', Default = Sprinting.MaxStamina or 100, Min = 1, Max = 1000, Rounding = 0,
+    StamTab:CreateSlider({
+        Name = "max",
+        Range = {1, 1000},
+        Increment = 1,
+        Suffix = "",
+        CurrentValue = Sprinting.MaxStamina or 100,
+        Flag = "Stam_Max",
         Callback = function(v) if Sprinting then Sprinting.MaxStamina = v end end,
     })
-    stamGroup:AddSlider('Stam_Speed', {
-        Text = 'sprint speed', Default = Sprinting.SprintSpeed or 26, Min = 1, Max = 40, Rounding = 0,
+    StamTab:CreateSlider({
+        Name = "sprint speed",
+        Range = {1, 40},
+        Increment = 1,
+        Suffix = "",
+        CurrentValue = Sprinting.SprintSpeed or 26,
+        Flag = "Stam_Speed",
         Callback = function(v) if Sprinting then Sprinting.SprintSpeed = v end end,
     })
-    stamGroup:AddSlider('Stam_Gain', {
-        Text = 'gain', Default = Sprinting.StaminaGain or 20, Min = 1, Max = 200, Rounding = 0,
+    StamTab:CreateSlider({
+        Name = "gain",
+        Range = {1, 200},
+        Increment = 1,
+        Suffix = "",
+        CurrentValue = Sprinting.StaminaGain or 20,
+        Flag = "Stam_Gain",
         Callback = function(v) if Sprinting then Sprinting.StaminaGain = v end end,
     })
-    stamGroup:AddSlider('Stam_Loss', {
-        Text = 'loss', Default = Sprinting.StaminaLoss or 10, Min = 0, Max = 50, Rounding = 1,
+    StamTab:CreateSlider({
+        Name = "loss",
+        Range = {0, 50},
+        Increment = 1,
+        Suffix = "",
+        CurrentValue = Sprinting.StaminaLoss or 10,
+        Flag = "Stam_Loss",
         Callback = function(v) if Sprinting then Sprinting.StaminaLoss = v end end,
     })
 end
 
 -- AUTO BLOCK
-local abGroup = Tabs.AutoBlock:AddLeftGroupbox('main')
-abGroup:AddToggle('AutoBlock', {
-    Text = 'enabled', Default = false,
+AutoBlockTab:CreateSection("main")
+AutoBlockTab:CreateToggle({
+    Name = "enabled",
+    CurrentValue = false,
+    Flag = "AutoBlock",
     Callback = function(v) CFG.AutoBlockEnabled = v end,
 })
-abGroup:AddLabel('auto block only fires when YOU are inside the killer\'s forward view cone.')
-abGroup:AddSlider('AB_Range', {
-    Text = 'range', Default = CFG.DetectionRange, Min = 8, Max = 60, Rounding = 0,
+AutoBlockTab:CreateParagraph({
+    Title = "info",
+    Content = "auto block only fires when YOU are inside the killer's forward view cone.",
+})
+AutoBlockTab:CreateSlider({
+    Name = "range",
+    Range = {8, 60},
+    Increment = 1,
+    Suffix = "",
+    CurrentValue = CFG.DetectionRange,
+    Flag = "AB_Range",
     Callback = function(v) CFG.DetectionRange = v end,
 })
-abGroup:AddSlider('AB_Delay', {
-    Text = 'delay', Default = 0, Min = 0, Max = 0.5, Rounding = 2,
+AutoBlockTab:CreateSlider({
+    Name = "delay",
+    Range = {0, 0.5},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = 0,
+    Flag = "AB_Delay",
     Callback = function(v) CFG.BlockDelay = v end,
 })
-local abTrigGroup = Tabs.AutoBlock:AddLeftGroupbox('triggers')
-abTrigGroup:AddToggle('AB_Sound', {
-    Text = 'sound', Default = true,
+AutoBlockTab:CreateSection("triggers")
+AutoBlockTab:CreateToggle({
+    Name = "sound",
+    CurrentValue = true,
+    Flag = "AB_Sound",
     Callback = function(v) CFG.SoundTrigger = v end,
 })
-abTrigGroup:AddToggle('AB_Anim', {
-    Text = 'animation', Default = true,
+AutoBlockTab:CreateToggle({
+    Name = "animation",
+    CurrentValue = true,
+    Flag = "AB_Anim",
     Callback = function(v) CFG.AnimTrigger = v end,
 })
-local abFilterGroup = Tabs.AutoBlock:AddLeftGroupbox('filters')
-abFilterGroup:AddToggle('AB_Wall', {
-    Text = 'wall check', Default = true,
+AutoBlockTab:CreateSection("filters")
+AutoBlockTab:CreateToggle({
+    Name = "wall check",
+    CurrentValue = true,
+    Flag = "AB_Wall",
     Callback = function(v) CFG.WallCheck = v end,
 })
-abFilterGroup:AddToggle('AB_Facing', {
-    Text = 'facing check', Default = true,
+AutoBlockTab:CreateToggle({
+    Name = "facing check",
+    CurrentValue = true,
+    Flag = "AB_Facing",
     Callback = function(v) CFG.FacingCheck = v end,
 })
-abFilterGroup:AddSlider('AB_FacingDot', {
-    Text = 'facing dot', Default = CFG.FacingDot, Min = -1, Max = 1, Rounding = 2,
+AutoBlockTab:CreateSlider({
+    Name = "facing dot",
+    Range = {-1, 1},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = CFG.FacingDot,
+    Flag = "AB_FacingDot",
     Callback = function(v) CFG.FacingDot = v end,
 })
 
 -- HDT
-local hdtGroup = Tabs.HDT:AddLeftGroupbox('main')
-hdtGroup:AddToggle('HDT_On', {
-    Text = 'enabled', Default = false,
+HDTTab:CreateSection("main")
+HDTTab:CreateToggle({
+    Name = "enabled",
+    CurrentValue = false,
+    Flag = "HDT_On",
     Callback = function(v) HDT.Enabled = v end,
 })
-hdtGroup:AddToggle('HDT_Auto', {
-    Text = 'auto on block', Default = true,
+HDTTab:CreateToggle({
+    Name = "auto on block",
+    CurrentValue = true,
+    Flag = "HDT_Auto",
     Callback = function(v) HDT.AutoTrigger = v end,
 })
-hdtGroup:AddSlider('HDT_Speed', {
-    Text = 'speed', Default = HDT.Speed, Min = 2, Max = 40, Rounding = 1,
+HDTTab:CreateSlider({
+    Name = "speed",
+    Range = {2, 40},
+    Increment = 0.5,
+    Suffix = "",
+    CurrentValue = HDT.Speed,
+    Flag = "HDT_Speed",
     Callback = function(v) HDT.Speed = v end,
 })
-hdtGroup:AddSlider('HDT_Delay', {
-    Text = 'delay', Default = HDT.Delay, Min = 0, Max = 2, Rounding = 2,
+HDTTab:CreateSlider({
+    Name = "delay",
+    Range = {0, 2},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = HDT.Delay,
+    Flag = "HDT_Delay",
     Callback = function(v) HDT.Delay = v end,
 })
-hdtGroup:AddSlider('HDT_Stop', {
-    Text = 'stop distance', Default = HDT.StopDistance, Min = 1, Max = 8, Rounding = 1,
+HDTTab:CreateSlider({
+    Name = "stop distance",
+    Range = {1, 8},
+    Increment = 0.1,
+    Suffix = "",
+    CurrentValue = HDT.StopDistance,
+    Flag = "HDT_Stop",
     Callback = function(v) HDT.StopDistance = v end,
 })
-hdtGroup:AddSlider('HDT_Timeout', {
-    Text = 'max drag time', Default = HDT.SafetyTimeout, Min = 0.2, Max = 3, Rounding = 2,
+HDTTab:CreateSlider({
+    Name = "max drag time",
+    Range = {0.2, 3},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = HDT.SafetyTimeout,
+    Flag = "HDT_Timeout",
     Callback = function(v) HDT.SafetyTimeout = v end,
 })
-hdtGroup:AddSlider('HDT_ReCD', {
-    Text = 're-trigger cd', Default = HDT.ReTriggerCooldown, Min = 0, Max = 5, Rounding = 2,
+HDTTab:CreateSlider({
+    Name = "re-trigger cd",
+    Range = {0, 5},
+    Increment = 0.1,
+    Suffix = "",
+    CurrentValue = HDT.ReTriggerCooldown,
+    Flag = "HDT_ReCD",
     Callback = function(v) HDT.ReTriggerCooldown = v end,
 })
-hdtGroup:AddKeybind('HDT_Manual', {
-    Text = 'manual trigger', Default = Enum.KeyCode.Q,
+HDTTab:CreateKeybind({
+    Name = "manual trigger",
+    CurrentKeybind = "Q",
+    HoldToInteract = false,
+    Flag = "HDT_Manual",
     Callback = function() HDT.Trigger() end,
 })
 
 -- AIM
-local aimGroup = Tabs.Aim:AddLeftGroupbox('main')
-aimGroup:AddToggle('Aim_On', {
-    Text = 'enabled', Default = false,
+AimTab:CreateSection("main")
+AimTab:CreateToggle({
+    Name = "enabled",
+    CurrentValue = false,
+    Flag = "Aim_On",
     Callback = function(v) AIM.Enabled = v end,
 })
-aimGroup:AddKeybind('Aim_Pulse', {
-    Text = 'pulse 3s', Default = Enum.KeyCode.C,
+AimTab:CreateKeybind({
+    Name = "pulse 3s",
+    CurrentKeybind = "C",
+    HoldToInteract = false,
+    Flag = "Aim_Pulse",
     Callback = function() AIM.AimFor(3.0) end,
 })
-aimGroup:AddToggle('Aim_Debug', {
-    Text = 'debug', Default = false,
+AimTab:CreateToggle({
+    Name = "debug",
+    CurrentValue = false,
+    Flag = "Aim_Debug",
     Callback = function(v) AIM.Debug = v end,
 })
 
-local aimBtnGroup = Tabs.Aim:AddLeftGroupbox('button hook')
-aimBtnGroup:AddToggle('Aim_BtnHook', {
-    Text = 'aim on stun tap', Default = true,
+AimTab:CreateSection("button hook")
+AimTab:CreateToggle({
+    Name = "aim on stun tap",
+    CurrentValue = true,
+    Flag = "Aim_BtnHook",
     Callback = function(v)
         AbilityHook.Enabled = v
         if v then
@@ -1901,52 +2002,89 @@ aimBtnGroup:AddToggle('Aim_BtnHook', {
         end
     end,
 })
-aimBtnGroup:AddSlider('Aim_BtnCooldown', {
-    Text = 'ability cooldown', Default = AbilityHook.Cooldown, Min = 1, Max = 60, Rounding = 1,
+AimTab:CreateSlider({
+    Name = "ability cooldown",
+    Range = {1, 60},
+    Increment = 0.5,
+    Suffix = "",
+    CurrentValue = AbilityHook.Cooldown,
+    Flag = "Aim_BtnCooldown",
     Callback = function(v) AbilityHook.Cooldown = v end,
 })
-aimBtnGroup:AddSlider('Aim_BtnWindow', {
-    Text = 'confirm window', Default = AbilityHook.PendingWindow, Min = 0.1, Max = 1.0, Rounding = 2,
+AimTab:CreateSlider({
+    Name = "confirm window",
+    Range = {0.1, 1.0},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = AbilityHook.PendingWindow,
+    Flag = "Aim_BtnWindow",
     Callback = function(v) AbilityHook.PendingWindow = v end,
 })
-aimBtnGroup:AddLabel('aim fires only after the ability\'s Action animation actually plays. window = max wait after the tap.')
-aimBtnGroup:AddSlider('Aim_LockMult', {
-    Text = 'lock multiplier', Default = AbilityHook.LockMultiplier, Min = 0.5, Max = 4, Rounding = 1,
+AimTab:CreateParagraph({
+    Title = "info",
+    Content = "aim fires only after the ability's Action animation actually plays. window = max wait after the tap.",
+})
+AimTab:CreateSlider({
+    Name = "lock multiplier",
+    Range = {0.5, 4},
+    Increment = 0.1,
+    Suffix = "",
+    CurrentValue = AbilityHook.LockMultiplier,
+    Flag = "Aim_LockMult",
     Callback = function(v) AbilityHook.LockMultiplier = v end,
 })
 
-local aimModeGroup = Tabs.Aim:AddLeftGroupbox('mode')
-aimModeGroup:AddDropdown('Aim_Mode', {
-    Text = 'aim mode',
-    Values = { 'Camera', 'HRP', 'HRP+Camera' },
-    Default = 1,
+AimTab:CreateSection("mode")
+AimTab:CreateDropdown({
+    Name = "aim mode",
+    Options = {"Camera", "HRP", "HRP+Camera"},
+    CurrentOption = "Camera",
+    Flag = "Aim_Mode",
     Callback = function(opt) AIM.AimMode = opt end,
 })
-aimModeGroup:AddSlider('Aim_Smooth', {
-    Text = 'smooth', Default = AIM.Smooth, Min = 0.05, Max = 1, Rounding = 2,
+AimTab:CreateSlider({
+    Name = "smooth",
+    Range = {0.05, 1},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = AIM.Smooth,
+    Flag = "Aim_Smooth",
     Callback = function(v) AIM.Smooth = v end,
 })
 
-local aimPredGroup = Tabs.Aim:AddLeftGroupbox('prediction')
-aimPredGroup:AddDropdown('Aim_PredictMode', {
-    Text = 'prediction mode',
-    Values = { 'Off', 'Ping', 'Velocity', 'Both' },
-    Default = 4,
+AimTab:CreateSection("prediction")
+AimTab:CreateDropdown({
+    Name = "prediction mode",
+    Options = {"Off", "Ping", "Velocity", "Both"},
+    CurrentOption = "Both",
+    Flag = "Aim_PredictMode",
     Callback = function(opt) AIM.PredictMode = opt end,
 })
-aimPredGroup:AddSlider('Aim_PredictLead', {
-    Text = 'velocity lead', Default = AIM.PredictLead, Min = 0, Max = 0.5, Rounding = 2,
+AimTab:CreateSlider({
+    Name = "velocity lead",
+    Range = {0, 0.5},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = AIM.PredictLead,
+    Flag = "Aim_PredictLead",
     Callback = function(v) AIM.PredictLead = v end,
 })
-aimPredGroup:AddSlider('Aim_PingMult', {
-    Text = 'ping mult', Default = AIM.PingMult, Min = 0, Max = 2, Rounding = 2,
+AimTab:CreateSlider({
+    Name = "ping mult",
+    Range = {0, 2},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = AIM.PingMult,
+    Flag = "Aim_PingMult",
     Callback = function(v) AIM.PingMult = v end,
 })
 
 -- BOX
-local boxGroup = Tabs.Box:AddLeftGroupbox('box check')
-boxGroup:AddToggle('FV_Box', {
-    Text = 'enabled', Default = false,
+BoxTab:CreateSection("box check")
+BoxTab:CreateToggle({
+    Name = "enabled",
+    CurrentValue = false,
+    Flag = "FV_Box",
     Callback = function(v)
         FacingVisual.BoxEnabled = v
         if not v then
@@ -1958,72 +2096,119 @@ boxGroup:AddToggle('FV_Box', {
         end
     end,
 })
-boxGroup:AddToggle('FV_FlashM1', {
-    Text = 'flash on killer m1', Default = true,
+BoxTab:CreateToggle({
+    Name = "flash on killer m1",
+    CurrentValue = true,
+    Flag = "FV_FlashM1",
     Callback = function(v) FacingVisual.FlashOnKillerM1 = v end,
 })
 
-local boxSizeGroup = Tabs.Box:AddLeftGroupbox('size')
-boxSizeGroup:AddSlider('FV_BoxWidth', {
-    Text = 'width', Default = FacingVisual.BoxWidth, Min = 0, Max = 30, Rounding = 1,
+BoxTab:CreateSection("size")
+BoxTab:CreateSlider({
+    Name = "width",
+    Range = {0, 30},
+    Increment = 0.5,
+    Suffix = "",
+    CurrentValue = FacingVisual.BoxWidth,
+    Flag = "FV_BoxWidth",
     Callback = function(v) FacingVisual.BoxWidth = v end,
 })
-boxSizeGroup:AddSlider('FV_BoxLength', {
-    Text = 'length', Default = FacingVisual.BoxLength, Min = 0, Max = 30, Rounding = 1,
+BoxTab:CreateSlider({
+    Name = "length",
+    Range = {0, 30},
+    Increment = 0.5,
+    Suffix = "",
+    CurrentValue = FacingVisual.BoxLength,
+    Flag = "FV_BoxLength",
     Callback = function(v) FacingVisual.BoxLength = v end,
 })
-boxSizeGroup:AddSlider('FV_BoxHeight', {
-    Text = 'height', Default = FacingVisual.BoxHeight, Min = 0, Max = 30, Rounding = 1,
+BoxTab:CreateSlider({
+    Name = "height",
+    Range = {0, 30},
+    Increment = 0.5,
+    Suffix = "",
+    CurrentValue = FacingVisual.BoxHeight,
+    Flag = "FV_BoxHeight",
     Callback = function(v) FacingVisual.BoxHeight = v end,
 })
-boxSizeGroup:AddToggle('FV_AutoWidth', {
-    Text = 'auto width', Default = false,
+BoxTab:CreateToggle({
+    Name = "auto width",
+    CurrentValue = false,
+    Flag = "FV_AutoWidth",
     Callback = function(v) FacingVisual.AutoWidth = v end,
 })
 
-local boxLookGroup = Tabs.Box:AddLeftGroupbox('look')
-boxLookGroup:AddSlider('FV_BoxFill', {
-    Text = 'transparency', Default = FacingVisual.BoxFill, Min = 0, Max = 0.95, Rounding = 2,
+BoxTab:CreateSection("look")
+BoxTab:CreateSlider({
+    Name = "transparency",
+    Range = {0, 0.95},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = FacingVisual.BoxFill,
+    Flag = "FV_BoxFill",
     Callback = function(v) FacingVisual.BoxFill = v end,
 })
-boxLookGroup:AddColorPicker('FV_PassColor', {
-    Text = 'pass color', Default = FacingVisual.PassColor,
+BoxTab:CreateColorPicker({
+    Name = "pass color",
+    Color = FacingVisual.PassColor,
+    Flag = "FV_PassColor",
     Callback = function(c) FacingVisual.PassColor = c end,
 })
-boxLookGroup:AddColorPicker('FV_InRangeColor', {
-    Text = 'in range color', Default = FacingVisual.InRangeColor,
+BoxTab:CreateColorPicker({
+    Name = "in range color",
+    Color = FacingVisual.InRangeColor,
+    Flag = "FV_InRangeColor",
     Callback = function(c) FacingVisual.InRangeColor = c end,
 })
-boxLookGroup:AddColorPicker('FV_OutRangeColor', {
-    Text = 'out range color', Default = FacingVisual.OutRangeColor,
+BoxTab:CreateColorPicker({
+    Name = "out range color",
+    Color = FacingVisual.OutRangeColor,
+    Flag = "FV_OutRangeColor",
     Callback = function(c) FacingVisual.OutRangeColor = c end,
 })
 
-local boxTimingGroup = Tabs.Box:AddLeftGroupbox('timing')
-boxTimingGroup:AddSlider('FV_FlashDur', {
-    Text = 'flash duration', Default = FacingVisual.FlashDuration, Min = 0.05, Max = 1.0, Rounding = 2,
+BoxTab:CreateSection("timing")
+BoxTab:CreateSlider({
+    Name = "flash duration",
+    Range = {0.05, 1.0},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = FacingVisual.FlashDuration,
+    Flag = "FV_FlashDur",
     Callback = function(v) FacingVisual.FlashDuration = v end,
 })
-boxTimingGroup:AddSlider('FV_FlashFade', {
-    Text = 'fade', Default = FacingVisual.FlashFade, Min = 0.0, Max = 1.0, Rounding = 2,
+BoxTab:CreateSlider({
+    Name = "fade",
+    Range = {0.0, 1.0},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = FacingVisual.FlashFade,
+    Flag = "FV_FlashFade",
     Callback = function(v) FacingVisual.FlashFade = v end,
 })
 
-local boxExtraGroup = Tabs.Box:AddLeftGroupbox('extra')
-boxExtraGroup:AddToggle('FV_FlashEnter', {
-    Text = 'flash on enter range', Default = false,
+BoxTab:CreateSection("extra")
+BoxTab:CreateToggle({
+    Name = "flash on enter range",
+    CurrentValue = false,
+    Flag = "FV_FlashEnter",
     Callback = function(v) FacingVisual.FlashOnEnterRange = v end,
 })
-boxExtraGroup:AddToggle('FV_FlashFlip', {
-    Text = 'flash on facing flip', Default = false,
+BoxTab:CreateToggle({
+    Name = "flash on facing flip",
+    CurrentValue = false,
+    Flag = "FV_FlashFlip",
     Callback = function(v) FacingVisual.FlashOnFacingFlip = v end,
 })
-boxExtraGroup:AddToggle('FV_FlashBlock', {
-    Text = 'flash on block fire', Default = false,
+BoxTab:CreateToggle({
+    Name = "flash on block fire",
+    CurrentValue = false,
+    Flag = "FV_FlashBlock",
     Callback = function(v) FacingVisual.FlashOnBlock = v end,
 })
-boxExtraGroup:AddButton('reset 6/15/6', {
-    Func = function()
+BoxTab:CreateButton({
+    Name = "reset 6/15/6",
+    Callback = function()
         FacingVisual.BoxWidth = 6
         FacingVisual.BoxLength = 15
         FacingVisual.BoxHeight = 6
@@ -2032,108 +2217,160 @@ boxExtraGroup:AddButton('reset 6/15/6', {
 })
 
 -- STAB
-local stabGroup = Tabs.Stab:AddLeftGroupbox('main')
-stabGroup:AddToggle('Stab_On', {
-    Text = 'enabled', Default = false,
+StabTab:CreateSection("main")
+StabTab:CreateToggle({
+    Name = "enabled",
+    CurrentValue = false,
+    Flag = "Stab_On",
     Callback = function(v) STAB.Enabled = v end,
 })
-stabGroup:AddKeybind('Stab_Manual', {
-    Text = 'manual stab', Default = Enum.KeyCode.H,
+StabTab:CreateKeybind({
+    Name = "manual stab",
+    CurrentKeybind = "H",
+    HoldToInteract = false,
+    Flag = "Stab_Manual",
     Callback = function() task.spawn(stabActivate) end,
 })
-stabGroup:AddSlider('Stab_Offset', {
-    Text = 'behind offset', Default = STAB.BehindOffset, Min = 0.5, Max = 6, Rounding = 1,
+StabTab:CreateSlider({
+    Name = "behind offset",
+    Range = {0.5, 6},
+    Increment = 0.1,
+    Suffix = "",
+    CurrentValue = STAB.BehindOffset,
+    Flag = "Stab_Offset",
     Callback = function(v) STAB.BehindOffset = v end,
 })
-stabGroup:AddSlider('Stab_Range', {
-    Text = 'max range', Default = STAB.MaxRange, Min = 10, Max = 150, Rounding = 0,
+StabTab:CreateSlider({
+    Name = "max range",
+    Range = {10, 150},
+    Increment = 5,
+    Suffix = "",
+    CurrentValue = STAB.MaxRange,
+    Flag = "Stab_Range",
     Callback = function(v) STAB.MaxRange = v end,
 })
-stabGroup:AddSlider('Stab_CD', {
-    Text = 'cooldown', Default = STAB.Cooldown, Min = 0.1, Max = 2, Rounding = 2,
+StabTab:CreateSlider({
+    Name = "cooldown",
+    Range = {0.1, 2},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = STAB.Cooldown,
+    Flag = "Stab_CD",
     Callback = function(v) STAB.Cooldown = v end,
 })
-stabGroup:AddSlider('Stab_TPDelay', {
-    Text = 'tp delay', Default = STAB.TeleportDelay, Min = 0, Max = 0.2, Rounding = 2,
+StabTab:CreateSlider({
+    Name = "tp delay",
+    Range = {0, 0.2},
+    Increment = 0.01,
+    Suffix = "",
+    CurrentValue = STAB.TeleportDelay,
+    Flag = "Stab_TPDelay",
     Callback = function(v) STAB.TeleportDelay = v end,
 })
-stabGroup:AddSlider('Stab_Follow', {
-    Text = 'follow duration', Default = STAB.FollowDuration, Min = 0.1, Max = 2, Rounding = 2,
+StabTab:CreateSlider({
+    Name = "follow duration",
+    Range = {0.1, 2},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = STAB.FollowDuration,
+    Flag = "Stab_Follow",
     Callback = function(v) STAB.FollowDuration = v end,
 })
-stabGroup:AddButton('stab now', {
-    Func = function() task.spawn(stabActivate) end,
+StabTab:CreateButton({
+    Name = "stab now",
+    Callback = function() task.spawn(stabActivate) end,
 })
 
 -- MISC
-local miscThemeGroup = Tabs.Misc:AddLeftGroupbox('theme')
-miscThemeGroup:AddDropdown('UI_Theme', {
-    Text = 'ui theme',
-    Values = { 'Default', 'BBot', 'Fatality', 'Jester', 'Mint', 'Tokyo Night', 'Ubuntu', 'Quartz' },
-    Default = 6,
-    Callback = function(opt) ThemeManager:SetLibrary(Library) ThemeManager:SetTheme(opt) end,
-})
-
-local miscAzureGroup = Tabs.Misc:AddLeftGroupbox('azure')
-miscAzureGroup:AddToggle('AZ_QTE', {
-    Text = 'auto qte', Default = false,
+MiscTab:CreateSection("azure")
+MiscTab:CreateToggle({
+    Name = "auto qte",
+    CurrentValue = false,
+    Flag = "AZ_QTE",
     Callback = function(v) AZ.AutoQTE = v if v then azHookQTE() end end,
 })
-miscAzureGroup:AddToggle('AZ_Inf', {
-    Text = 'inf qte', Default = false,
+MiscTab:CreateToggle({
+    Name = "inf qte",
+    CurrentValue = false,
+    Flag = "AZ_Inf",
     Callback = function(v) AZ.InfiniteQTE = v if v then azHookQTE() end end,
 })
 
-local miscGenGroup = Tabs.Misc:AddLeftGroupbox('auto generator')
-miscGenGroup:AddToggle('Gen_On', {
-    Text = 'enabled', Default = false,
+MiscTab:CreateSection("auto generator")
+MiscTab:CreateToggle({
+    Name = "enabled",
+    CurrentValue = false,
+    Flag = "Gen_On",
     Callback = function(v) AUTOGEN.Enabled = v end,
 })
-miscGenGroup:AddSlider('Gen_Range', {
-    Text = 'range', Default = AUTOGEN.MaxDistance, Min = 5, Max = 30, Rounding = 0,
+MiscTab:CreateSlider({
+    Name = "range",
+    Range = {5, 30},
+    Increment = 1,
+    Suffix = "",
+    CurrentValue = AUTOGEN.MaxDistance,
+    Flag = "Gen_Range",
     Callback = function(v) AUTOGEN.MaxDistance = v end,
 })
-miscGenGroup:AddSlider('Gen_CD', {
-    Text = 'interval', Default = AUTOGEN.Cooldown, Min = 0.3, Max = 5, Rounding = 1,
+MiscTab:CreateSlider({
+    Name = "interval",
+    Range = {0.3, 5},
+    Increment = 0.1,
+    Suffix = "",
+    CurrentValue = AUTOGEN.Cooldown,
+    Flag = "Gen_CD",
     Callback = function(v) AUTOGEN.Cooldown = v end,
 })
 
-local miscHbeGroup = Tabs.Misc:AddLeftGroupbox('hitbox expander')
-miscHbeGroup:AddToggle('HBE_On', {
-    Text = 'enabled', Default = false,
+MiscTab:CreateSection("hitbox expander")
+MiscTab:CreateToggle({
+    Name = "enabled",
+    CurrentValue = false,
+    Flag = "HBE_On",
     Callback = function(v) if v then hbeStart() else hbeStop() end end,
 })
-miscHbeGroup:AddDropdown('HBE_Mode', {
-    Text = 'mode',
-    Values = { 'Scale', 'Velocity' },
-    Default = 1,
+MiscTab:CreateDropdown({
+    Name = "mode",
+    Options = {"Scale", "Velocity"},
+    CurrentOption = "Scale",
+    Flag = "HBE_Mode",
     Callback = function(opt)
-        HBE.Mode = opt or 'Scale'
+        HBE.Mode = opt or "Scale"
         if HBE.Enabled then hbeStop() hbeStart() end
     end,
 })
-miscHbeGroup:AddSlider('HBE_Mult', {
-    Text = 'size multiplier', Default = HBE.SizeMultiplier, Min = 1, Max = 5, Rounding = 2,
+MiscTab:CreateSlider({
+    Name = "size multiplier",
+    Range = {1, 5},
+    Increment = 0.1,
+    Suffix = "x",
+    CurrentValue = HBE.SizeMultiplier,
+    Flag = "HBE_Mult",
     Callback = function(v) HBE.SizeMultiplier = v if HBE.Enabled then hbeApply() end end,
 })
-miscHbeGroup:AddToggle('HBE_OnlyAtk', {
-    Text = 'only on attack', Default = false,
+MiscTab:CreateToggle({
+    Name = "only on attack",
+    CurrentValue = false,
+    Flag = "HBE_OnlyAtk",
     Callback = function(v)
         HBE.ApplyOnlyOnAttack = v
         if HBE.Enabled and lp.Character then hbeDisconnectAll() hbeHookCharacter(lp.Character) end
     end,
 })
-miscHbeGroup:AddToggle('HBE_Visual', {
-    Text = 'visualize', Default = false,
+MiscTab:CreateToggle({
+    Name = "visualize",
+    CurrentValue = false,
+    Flag = "HBE_Visual",
     Callback = function(v) HBE.Visualize = v hbeApplyVisual() end,
 })
-miscHbeGroup:AddButton('1.25x', { Func = function() HBE.SizeMultiplier = 1.25 if HBE.Enabled then hbeApply() end end })
-miscHbeGroup:AddButton('1.50x', { Func = function() HBE.SizeMultiplier = 1.5  if HBE.Enabled then hbeApply() end end })
-miscHbeGroup:AddButton('2.00x', { Func = function() HBE.SizeMultiplier = 2.0  if HBE.Enabled then hbeApply() end end })
+MiscTab:CreateButton({ Name = "1.25x", Callback = function() HBE.SizeMultiplier = 1.25 if HBE.Enabled then hbeApply() end end })
+MiscTab:CreateButton({ Name = "1.50x", Callback = function() HBE.SizeMultiplier = 1.5  if HBE.Enabled then hbeApply() end end })
+MiscTab:CreateButton({ Name = "2.00x", Callback = function() HBE.SizeMultiplier = 2.0  if HBE.Enabled then hbeApply() end end })
 
-local miscUtilGroup = Tabs.Misc:AddLeftGroupbox('utility')
-miscUtilGroup:AddButton('fullbright', {
-    Func = function()
+MiscTab:CreateSection("utility")
+MiscTab:CreateButton({
+    Name = "fullbright",
+    Callback = function()
         Lighting.Ambient = Color3.new(1,1,1)
         Lighting.OutdoorAmbient = Color3.new(1,1,1)
         Lighting.Brightness = 2; Lighting.ClockTime = 12
@@ -2141,8 +2378,9 @@ miscUtilGroup:AddButton('fullbright', {
         if atmo then atmo:Destroy() end
     end,
 })
-miscUtilGroup:AddButton('show chat', {
-    Func = function()
+MiscTab:CreateButton({
+    Name = "show chat",
+    Callback = function()
         pcall(function()
             local cfg = TextChatService:FindFirstChildOfClass("ChatWindowConfiguration")
             local inp = TextChatService:FindFirstChildOfClass("ChatInputBarConfiguration")
@@ -2151,15 +2389,17 @@ miscUtilGroup:AddButton('show chat', {
         end)
     end,
 })
-miscUtilGroup:AddButton('reset character', {
-    Func = function()
+MiscTab:CreateButton({
+    Name = "reset character",
+    Callback = function()
         local char = lp.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if hum then hum.Health = 0 end
     end,
 })
-miscUtilGroup:AddButton('anti lag', {
-    Func = function()
+MiscTab:CreateButton({
+    Name = "anti lag",
+    Callback = function()
         task.spawn(function()
             pcall(function()
                 loadstring(game:HttpGet("https://raw.githubusercontent.com/zxcursedsocute/Forsaken-Script/refs/heads/main/anti%20lag%20test"))()
@@ -2168,10 +2408,11 @@ miscUtilGroup:AddButton('anti lag', {
     end,
 })
 
--- Config saving
-SaveManager:SetLibrary(Library)
-SaveManager:SetFolder('hunter')
-SaveManager:BuildConfigSection(Tabs.Misc)
-SaveManager:LoadAutoloadConfig()
+Rayfield:LoadConfiguration()
 
-Library:Notify('hunter loaded', 4)
+Rayfield:Notify({
+    Title = "hunter",
+    Content = "loaded",
+    Duration = 4,
+    Image = 4483362458,
+})
