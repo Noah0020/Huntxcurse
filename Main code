@@ -1,10 +1,10 @@
 -- hunter hub
 -- esp / stam / autoblock / hdt / aim / box / stab / misc
--- GUI: Rayfield (sirius.menu build)
+-- GUI: Obsidian (red / Blood theme, in-window theme changer)
 
 repeat task.wait() until game:IsLoaded()
 
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Obsidian = loadstring(game:HttpGet("https://raw.githubusercontent.com/deeeity/obsidian/main/Obsidian.lua"))()
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -1261,9 +1261,11 @@ HBE = {
     Enabled = false, Mode = "Scale", SizeMultiplier = 1.5,
     ApplyOnlyOnAttack = false, Visualize = false,
     VelocitySpeed = 55, VelocityStopDist = 2,
+    DragCooldown = 1.0,
     _char = nil, _hitbox = nil, _origSize = nil, _sizeConn = nil,
     _charConns = {}, _animConns = {}, _visuals = {}, _attackOpen = false,
-    _dragConn = nil, _dragBV = nil, _dragOrigin = nil,
+    _dragConn = nil, _dragBV = nil, _dragOrigin = nil, _dragHum = nil,
+    _dragCooldownUntil = 0,
 }
 
 local HBE_HITBOX_NAMES = { "CollisionHitbox", "Hitbox", "MainHitbox", "MeleeHitbox" }
@@ -1330,36 +1332,56 @@ local function hbeRevert()
     hbeDestroyVisuals()
 end
 
+-- FIX: restore humanoid state, and set a real cooldown when drag ends
 local function hbeStopDrag()
-    if HBE._dragConn then pcall(function() HBE._dragConn:Disconnect() end) HBE._dragConn = nil end
-    if HBE._dragBV and HBE._dragBV.Parent then pcall(function() HBE._dragBV:Destroy() end) end
-    HBE._dragBV = nil; HBE._dragOrigin = nil
+    if HBE._dragConn then
+        pcall(function() HBE._dragConn:Disconnect() end)
+        HBE._dragConn = nil
+    end
+    if HBE._dragBV and HBE._dragBV.Parent then
+        pcall(function() HBE._dragBV:Destroy() end)
+    end
+    HBE._dragBV = nil
+
+    -- restore humanoid
+    if HBE._dragHum and HBE._dragHum.Parent and HBE._dragOrigin then
+        pcall(function()
+            HBE._dragHum.WalkSpeed = HBE._dragOrigin.walk
+            HBE._dragHum.JumpPower = HBE._dragOrigin.jump
+            HBE._dragHum.AutoRotate = HBE._dragOrigin.autoRot
+        end)
+    end
+    HBE._dragHum = nil
+    HBE._dragOrigin = nil
+
+    -- real cooldown before a new drag can start
+    HBE._dragCooldownUntil = tick() + (HBE.DragCooldown or 1.0)
 end
 
 local function hbeStartDrag()
     if HBE.Mode ~= "Velocity" then return end
     if HBE._dragConn then return end
+    if tick() < (HBE._dragCooldownUntil or 0) then return end
     local char = lp.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum then return end
+
+    HBE._dragHum = hum
     HBE._dragOrigin = { walk = hum.WalkSpeed, jump = hum.JumpPower, autoRot = hum.AutoRotate }
     hum.WalkSpeed = 0; hum.JumpPower = 0; hum.AutoRotate = false
+
     local bv = Instance.new("BodyVelocity")
     bv.MaxForce = Vector3.new(1e5, 0, 1e5); bv.Velocity = Vector3.zero
     bv.Parent = hrp; HBE._dragBV = bv
+
     HBE._dragConn = RunService.Heartbeat:Connect(function()
-        local origin = HBE._dragOrigin
-        local function restore()
-            if hum and hum.Parent and origin then
-                hum.WalkSpeed = origin.walk
-                hum.JumpPower = origin.jump
-                hum.AutoRotate = origin.autoRot
-            end
+        if not HBE.Enabled or HBE.Mode ~= "Velocity" or not HBE._attackOpen then
+            hbeStopDrag(); return
         end
-        if not HBE.Enabled or HBE.Mode ~= "Velocity" then
-            hbeStopDrag(); restore(); return
+        if not char.Parent or not hrp.Parent then
+            hbeStopDrag(); return
         end
         local k = nearestKillerPart()
         if not k or not k.Parent then bv.Velocity = Vector3.zero return end
@@ -1367,7 +1389,7 @@ local function hbeStartDrag()
         local horiz = Vector3.new(delta.X, 0, delta.Z)
         local dist = horiz.Magnitude
         if dist < HBE.VelocityStopDist then
-            bv.Velocity = Vector3.zero; hbeStopDrag(); restore(); return
+            hbeStopDrag(); return
         end
         local dir = horiz.Unit
         bv.Velocity = Vector3.new(dir.X * HBE.VelocitySpeed, 0, dir.Z * HBE.VelocitySpeed)
@@ -1391,8 +1413,10 @@ local function hbeOnAttackOpen()
     if HBE.Mode == "Velocity" then hbeStartDrag() end
 end
 
+-- FIX: stop drag when attack closes so it can't run forever
 local function hbeOnAttackClose()
     HBE._attackOpen = false
+    if HBE.Mode == "Velocity" then hbeStopDrag() end
     if not HBE.Enabled then return end
     hbeApply()
 end
@@ -1439,6 +1463,7 @@ local function hbeHookCharacter(char)
     HBE._char = char
     hbeDisconnectAll(); hbeRevert()
     HBE._hitbox = nil; HBE._origSize = nil; HBE._attackOpen = false
+    HBE._dragCooldownUntil = 0
 
     task.spawn(function()
         local hitbox, t0 = nil, os.clock()
@@ -1497,6 +1522,7 @@ local function hbeStop()
 end
 
 lp.CharacterAdded:Connect(function(char)
+    hbeStopDrag()
     if HBE.Enabled then
         task.wait(0.5)
         hbeHookCharacter(char)
@@ -1732,268 +1758,185 @@ if KillersFolder then
 end
 
 -- =========================================================
--- UI (Rayfield)
+-- UI (Obsidian) - red theme ("Blood"), theme changer built-in via the gear icon
 -- =========================================================
 
-local Window = Rayfield:CreateWindow({
-    Name = "hunter",
-    LoadingTitle = "hunter",
-    LoadingSubtitle = "gg",
-    Theme = "Dark",
-    ConfigurationSaving = {
-        Enabled = true,
-        FolderName = "hunter",
-        FileName = "config",
-    },
-    KeySystem = false,
+local Window = Obsidian:CreateWindow({
+    Title = "hunter",
+    Subtitle = "gg",
+    Theme = "Blood",              -- red default; user can change in settings
+    Size = UDim2.fromOffset(620, 500),
+    MinSize = Vector2.new(480, 380),
+    Resizeable = true,
+    ToggleKeybind = Enum.KeyCode.RightShift,
 })
 
-local ESPTab       = Window:CreateTab("esp", 4483362458)
-local StamTab      = Window:CreateTab("stam", 4483362458)
-local AutoBlockTab = Window:CreateTab("auto block", 4483362458)
-local HDTTab       = Window:CreateTab("hdt", 4483362458)
-local AimTab       = Window:CreateTab("aim", 4483362458)
-local BoxTab       = Window:CreateTab("box", 4483362458)
-local StabTab      = Window:CreateTab("stab", 4483362458)
-local MiscTab      = Window:CreateTab("misc", 4483362458)
+local ESPTab       = Window:CreateTab("esp", "rbxassetid://4483362458")
+local StamTab      = Window:CreateTab("stam", "rbxassetid://4483362458")
+local AutoBlockTab = Window:CreateTab("auto block", "rbxassetid://4483362458")
+local HDTTab       = Window:CreateTab("hdt", "rbxassetid://4483362458")
+local AimTab       = Window:CreateTab("aim", "rbxassetid://4483362458")
+local BoxTab       = Window:CreateTab("box", "rbxassetid://4483362458")
+local StabTab      = Window:CreateTab("stab", "rbxassetid://4483362458")
+local MiscTab      = Window:CreateTab("misc", "rbxassetid://4483362458")
+
+-- Obsidian shows one section per tab; merge original subsections into one per tab.
 
 -- ESP
-ESPTab:CreateSection("players")
-ESPTab:CreateToggle({
-    Name = "killer",
-    CurrentValue = false,
-    Flag = "ESP_Killers",
+local ESPSection = ESPTab:CreateSection("players & world")
+ESPSection:CreateToggle({
+    Title = "killer",
+    Default = false,
     Callback = function(v) CFG.ESPKillers = v if v then refreshKillers() else clearKillerESP() end end,
 })
-ESPTab:CreateToggle({
-    Name = "survivor",
-    CurrentValue = false,
-    Flag = "ESP_Survivors",
+ESPSection:CreateToggle({
+    Title = "survivor",
+    Default = false,
     Callback = function(v) CFG.ESPSurvivors = v if v then refreshSurvivors() else clearSurvivorESP() end end,
 })
-ESPTab:CreateSection("world")
-ESPTab:CreateToggle({
-    Name = "generators",
-    CurrentValue = false,
-    Flag = "ESP_Generators",
+ESPSection:CreateToggle({
+    Title = "generators",
+    Default = false,
     Callback = function(v) CFG.ESPGenerators = v if v then refreshGenerators() else clearGeneratorESP() end end,
 })
-ESPTab:CreateToggle({
-    Name = "items",
-    CurrentValue = false,
-    Flag = "ESP_Items",
+ESPSection:CreateToggle({
+    Title = "items",
+    Default = false,
     Callback = function(v) CFG.ESPItems = v if v then refreshItems() else clearItemESP() end end,
 })
 
 -- STAM
-StamTab:CreateSection("sprint")
+local StamSection = StamTab:CreateSection("sprint")
 if not Sprinting then
-    StamTab:CreateLabel("no sprinting module found")
+    StamSection:CreateParagraph({ Title = "note", Content = "no sprinting module found" })
 else
-    StamTab:CreateToggle({
-        Name = "infinite stamina",
-        CurrentValue = false,
-        Flag = "InfStam",
+    StamSection:CreateToggle({
+        Title = "infinite stamina",
+        Default = false,
         Callback = function(v) CFG.InfiniteStamina = v if v then startInfiniteStamina() else stopInfiniteStamina() end end,
     })
-    StamTab:CreateSlider({
-        Name = "max",
-        Range = {1, 1000},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = Sprinting.MaxStamina or 100,
-        Flag = "Stam_Max",
+    StamSection:CreateSlider({
+        Title = "max", Range = {1, 1000}, Increment = 1, Suffix = "",
+        Default = Sprinting.MaxStamina or 100,
         Callback = function(v) if Sprinting then Sprinting.MaxStamina = v end end,
     })
-    StamTab:CreateSlider({
-        Name = "sprint speed",
-        Range = {1, 40},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = Sprinting.SprintSpeed or 26,
-        Flag = "Stam_Speed",
+    StamSection:CreateSlider({
+        Title = "sprint speed", Range = {1, 40}, Increment = 1, Suffix = "",
+        Default = Sprinting.SprintSpeed or 26,
         Callback = function(v) if Sprinting then Sprinting.SprintSpeed = v end end,
     })
-    StamTab:CreateSlider({
-        Name = "gain",
-        Range = {1, 200},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = Sprinting.StaminaGain or 20,
-        Flag = "Stam_Gain",
+    StamSection:CreateSlider({
+        Title = "gain", Range = {1, 200}, Increment = 1, Suffix = "",
+        Default = Sprinting.StaminaGain or 20,
         Callback = function(v) if Sprinting then Sprinting.StaminaGain = v end end,
     })
-    StamTab:CreateSlider({
-        Name = "loss",
-        Range = {0, 50},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = Sprinting.StaminaLoss or 10,
-        Flag = "Stam_Loss",
+    StamSection:CreateSlider({
+        Title = "loss", Range = {0, 50}, Increment = 1, Suffix = "",
+        Default = Sprinting.StaminaLoss or 10,
         Callback = function(v) if Sprinting then Sprinting.StaminaLoss = v end end,
     })
 end
 
 -- AUTO BLOCK
-AutoBlockTab:CreateSection("main")
-AutoBlockTab:CreateToggle({
-    Name = "enabled",
-    CurrentValue = false,
-    Flag = "AutoBlock",
+local ABSection = AutoBlockTab:CreateSection("auto block")
+ABSection:CreateToggle({
+    Title = "enabled", Default = false,
     Callback = function(v) CFG.AutoBlockEnabled = v end,
 })
-AutoBlockTab:CreateParagraph({
+ABSection:CreateParagraph({
     Title = "info",
     Content = "auto block only fires when YOU are inside the killer's forward view cone.",
 })
-AutoBlockTab:CreateSlider({
-    Name = "range",
-    Range = {8, 60},
-    Increment = 1,
-    Suffix = "",
-    CurrentValue = CFG.DetectionRange,
-    Flag = "AB_Range",
+ABSection:CreateSlider({
+    Title = "range", Range = {8, 60}, Increment = 1, Suffix = "",
+    Default = CFG.DetectionRange,
     Callback = function(v) CFG.DetectionRange = v end,
 })
-AutoBlockTab:CreateSlider({
-    Name = "delay",
-    Range = {0, 0.5},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = 0,
-    Flag = "AB_Delay",
+ABSection:CreateSlider({
+    Title = "delay", Range = {0, 0.5}, Increment = 0.05, Suffix = "",
+    Default = 0,
     Callback = function(v) CFG.BlockDelay = v end,
 })
-AutoBlockTab:CreateSection("triggers")
-AutoBlockTab:CreateToggle({
-    Name = "sound",
-    CurrentValue = true,
-    Flag = "AB_Sound",
+ABSection:CreateToggle({
+    Title = "sound trigger", Default = true,
     Callback = function(v) CFG.SoundTrigger = v end,
 })
-AutoBlockTab:CreateToggle({
-    Name = "animation",
-    CurrentValue = true,
-    Flag = "AB_Anim",
+ABSection:CreateToggle({
+    Title = "animation trigger", Default = true,
     Callback = function(v) CFG.AnimTrigger = v end,
 })
-AutoBlockTab:CreateSection("filters")
-AutoBlockTab:CreateToggle({
-    Name = "wall check",
-    CurrentValue = true,
-    Flag = "AB_Wall",
+ABSection:CreateToggle({
+    Title = "wall check", Default = true,
     Callback = function(v) CFG.WallCheck = v end,
 })
-AutoBlockTab:CreateToggle({
-    Name = "facing check",
-    CurrentValue = true,
-    Flag = "AB_Facing",
+ABSection:CreateToggle({
+    Title = "facing check", Default = true,
     Callback = function(v) CFG.FacingCheck = v end,
 })
-AutoBlockTab:CreateSlider({
-    Name = "facing dot",
-    Range = {-1, 1},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = CFG.FacingDot,
-    Flag = "AB_FacingDot",
+ABSection:CreateSlider({
+    Title = "facing dot", Range = {-1, 1}, Increment = 0.05, Suffix = "",
+    Default = CFG.FacingDot,
     Callback = function(v) CFG.FacingDot = v end,
 })
 
 -- HDT
-HDTTab:CreateSection("main")
-HDTTab:CreateToggle({
-    Name = "enabled",
-    CurrentValue = false,
-    Flag = "HDT_On",
+local HDTSection = HDTTab:CreateSection("hdt")
+HDTSection:CreateToggle({
+    Title = "enabled", Default = false,
     Callback = function(v) HDT.Enabled = v end,
 })
-HDTTab:CreateToggle({
-    Name = "auto on block",
-    CurrentValue = true,
-    Flag = "HDT_Auto",
+HDTSection:CreateToggle({
+    Title = "auto on block", Default = true,
     Callback = function(v) HDT.AutoTrigger = v end,
 })
-HDTTab:CreateSlider({
-    Name = "speed",
-    Range = {2, 40},
-    Increment = 0.5,
-    Suffix = "",
-    CurrentValue = HDT.Speed,
-    Flag = "HDT_Speed",
+HDTSection:CreateSlider({
+    Title = "speed", Range = {2, 40}, Increment = 0.5, Suffix = "",
+    Default = HDT.Speed,
     Callback = function(v) HDT.Speed = v end,
 })
-HDTTab:CreateSlider({
-    Name = "delay",
-    Range = {0, 2},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = HDT.Delay,
-    Flag = "HDT_Delay",
+HDTSection:CreateSlider({
+    Title = "delay", Range = {0, 2}, Increment = 0.05, Suffix = "",
+    Default = HDT.Delay,
     Callback = function(v) HDT.Delay = v end,
 })
-HDTTab:CreateSlider({
-    Name = "stop distance",
-    Range = {1, 8},
-    Increment = 0.1,
-    Suffix = "",
-    CurrentValue = HDT.StopDistance,
-    Flag = "HDT_Stop",
+HDTSection:CreateSlider({
+    Title = "stop distance", Range = {1, 8}, Increment = 0.1, Suffix = "",
+    Default = HDT.StopDistance,
     Callback = function(v) HDT.StopDistance = v end,
 })
-HDTTab:CreateSlider({
-    Name = "max drag time",
-    Range = {0.2, 3},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = HDT.SafetyTimeout,
-    Flag = "HDT_Timeout",
+HDTSection:CreateSlider({
+    Title = "max drag time", Range = {0.2, 3}, Increment = 0.05, Suffix = "",
+    Default = HDT.SafetyTimeout,
     Callback = function(v) HDT.SafetyTimeout = v end,
 })
-HDTTab:CreateSlider({
-    Name = "re-trigger cd",
-    Range = {0, 5},
-    Increment = 0.1,
-    Suffix = "",
-    CurrentValue = HDT.ReTriggerCooldown,
-    Flag = "HDT_ReCD",
+HDTSection:CreateSlider({
+    Title = "re-trigger cd", Range = {0, 5}, Increment = 0.1, Suffix = "",
+    Default = HDT.ReTriggerCooldown,
     Callback = function(v) HDT.ReTriggerCooldown = v end,
 })
-HDTTab:CreateKeybind({
-    Name = "manual trigger",
-    CurrentKeybind = "Q",
-    HoldToInteract = false,
-    Flag = "HDT_Manual",
+HDTSection:CreateKeybind({
+    Title = "manual trigger",
+    Default = "Q",
     Callback = function() HDT.Trigger() end,
 })
 
 -- AIM
-AimTab:CreateSection("main")
-AimTab:CreateToggle({
-    Name = "enabled",
-    CurrentValue = false,
-    Flag = "Aim_On",
+local AimSection = AimTab:CreateSection("aim")
+AimSection:CreateToggle({
+    Title = "enabled", Default = false,
     Callback = function(v) AIM.Enabled = v end,
 })
-AimTab:CreateKeybind({
-    Name = "pulse 3s",
-    CurrentKeybind = "C",
-    HoldToInteract = false,
-    Flag = "Aim_Pulse",
+AimSection:CreateKeybind({
+    Title = "pulse 3s",
+    Default = "C",
     Callback = function() AIM.AimFor(3.0) end,
 })
-AimTab:CreateToggle({
-    Name = "debug",
-    CurrentValue = false,
-    Flag = "Aim_Debug",
+AimSection:CreateToggle({
+    Title = "debug", Default = false,
     Callback = function(v) AIM.Debug = v end,
 })
-
-AimTab:CreateSection("button hook")
-AimTab:CreateToggle({
-    Name = "aim on stun tap",
-    CurrentValue = true,
-    Flag = "Aim_BtnHook",
+AimSection:CreateToggle({
+    Title = "aim on stun tap", Default = true,
     Callback = function(v)
         AbilityHook.Enabled = v
         if v then
@@ -2002,89 +1945,57 @@ AimTab:CreateToggle({
         end
     end,
 })
-AimTab:CreateSlider({
-    Name = "ability cooldown",
-    Range = {1, 60},
-    Increment = 0.5,
-    Suffix = "",
-    CurrentValue = AbilityHook.Cooldown,
-    Flag = "Aim_BtnCooldown",
+AimSection:CreateSlider({
+    Title = "ability cooldown", Range = {0, 60}, Increment = 0.5, Suffix = "",
+    Default = AbilityHook.Cooldown,
     Callback = function(v) AbilityHook.Cooldown = v end,
 })
-AimTab:CreateSlider({
-    Name = "confirm window",
-    Range = {0.1, 1.0},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = AbilityHook.PendingWindow,
-    Flag = "Aim_BtnWindow",
+AimSection:CreateSlider({
+    Title = "confirm window", Range = {0.1, 1.0}, Increment = 0.05, Suffix = "",
+    Default = AbilityHook.PendingWindow,
     Callback = function(v) AbilityHook.PendingWindow = v end,
 })
-AimTab:CreateParagraph({
+AimSection:CreateParagraph({
     Title = "info",
     Content = "aim fires only after the ability's Action animation actually plays. window = max wait after the tap.",
 })
-AimTab:CreateSlider({
-    Name = "lock multiplier",
-    Range = {0.5, 4},
-    Increment = 0.1,
-    Suffix = "",
-    CurrentValue = AbilityHook.LockMultiplier,
-    Flag = "Aim_LockMult",
+AimSection:CreateSlider({
+    Title = "lock multiplier", Range = {0.5, 4}, Increment = 0.1, Suffix = "",
+    Default = AbilityHook.LockMultiplier,
     Callback = function(v) AbilityHook.LockMultiplier = v end,
 })
-
-AimTab:CreateSection("mode")
-AimTab:CreateDropdown({
-    Name = "aim mode",
-    Options = {"Camera", "HRP", "HRP+Camera"},
-    CurrentOption = "Camera",
-    Flag = "Aim_Mode",
+AimSection:CreateDropdown({
+    Title = "aim mode",
+    Values = {"Camera", "HRP", "HRP+Camera"},
+    Default = "Camera",
     Callback = function(opt) AIM.AimMode = opt end,
 })
-AimTab:CreateSlider({
-    Name = "smooth",
-    Range = {0.05, 1},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = AIM.Smooth,
-    Flag = "Aim_Smooth",
+AimSection:CreateSlider({
+    Title = "smooth", Range = {0.05, 1}, Increment = 0.05, Suffix = "",
+    Default = AIM.Smooth,
     Callback = function(v) AIM.Smooth = v end,
 })
-
-AimTab:CreateSection("prediction")
-AimTab:CreateDropdown({
-    Name = "prediction mode",
-    Options = {"Off", "Ping", "Velocity", "Both"},
-    CurrentOption = "Both",
-    Flag = "Aim_PredictMode",
+AimSection:CreateDropdown({
+    Title = "prediction mode",
+    Values = {"Off", "Ping", "Velocity", "Both"},
+    Default = "Both",
     Callback = function(opt) AIM.PredictMode = opt end,
 })
-AimTab:CreateSlider({
-    Name = "velocity lead",
-    Range = {0, 0.5},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = AIM.PredictLead,
-    Flag = "Aim_PredictLead",
+AimSection:CreateSlider({
+    Title = "velocity lead", Range = {0, 0.5}, Increment = 0.05, Suffix = "",
+    Default = AIM.PredictLead,
     Callback = function(v) AIM.PredictLead = v end,
 })
-AimTab:CreateSlider({
-    Name = "ping mult",
-    Range = {0, 2},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = AIM.PingMult,
-    Flag = "Aim_PingMult",
+AimSection:CreateSlider({
+    Title = "ping mult", Range = {0, 2}, Increment = 0.05, Suffix = "",
+    Default = AIM.PingMult,
     Callback = function(v) AIM.PingMult = v end,
 })
 
 -- BOX
-BoxTab:CreateSection("box check")
-BoxTab:CreateToggle({
-    Name = "enabled",
-    CurrentValue = false,
-    Flag = "FV_Box",
+local BoxSection = BoxTab:CreateSection("box")
+BoxSection:CreateToggle({
+    Title = "enabled", Default = false,
     Callback = function(v)
         FacingVisual.BoxEnabled = v
         if not v then
@@ -2096,118 +2007,73 @@ BoxTab:CreateToggle({
         end
     end,
 })
-BoxTab:CreateToggle({
-    Name = "flash on killer m1",
-    CurrentValue = true,
-    Flag = "FV_FlashM1",
+BoxSection:CreateToggle({
+    Title = "flash on killer m1", Default = true,
     Callback = function(v) FacingVisual.FlashOnKillerM1 = v end,
 })
-
-BoxTab:CreateSection("size")
-BoxTab:CreateSlider({
-    Name = "width",
-    Range = {0, 30},
-    Increment = 0.5,
-    Suffix = "",
-    CurrentValue = FacingVisual.BoxWidth,
-    Flag = "FV_BoxWidth",
+BoxSection:CreateSlider({
+    Title = "width", Range = {0, 30}, Increment = 0.5, Suffix = "",
+    Default = FacingVisual.BoxWidth,
     Callback = function(v) FacingVisual.BoxWidth = v end,
 })
-BoxTab:CreateSlider({
-    Name = "length",
-    Range = {0, 30},
-    Increment = 0.5,
-    Suffix = "",
-    CurrentValue = FacingVisual.BoxLength,
-    Flag = "FV_BoxLength",
+BoxSection:CreateSlider({
+    Title = "length", Range = {0, 30}, Increment = 0.5, Suffix = "",
+    Default = FacingVisual.BoxLength,
     Callback = function(v) FacingVisual.BoxLength = v end,
 })
-BoxTab:CreateSlider({
-    Name = "height",
-    Range = {0, 30},
-    Increment = 0.5,
-    Suffix = "",
-    CurrentValue = FacingVisual.BoxHeight,
-    Flag = "FV_BoxHeight",
+BoxSection:CreateSlider({
+    Title = "height", Range = {0, 30}, Increment = 0.5, Suffix = "",
+    Default = FacingVisual.BoxHeight,
     Callback = function(v) FacingVisual.BoxHeight = v end,
 })
-BoxTab:CreateToggle({
-    Name = "auto width",
-    CurrentValue = false,
-    Flag = "FV_AutoWidth",
+BoxSection:CreateToggle({
+    Title = "auto width", Default = false,
     Callback = function(v) FacingVisual.AutoWidth = v end,
 })
-
-BoxTab:CreateSection("look")
-BoxTab:CreateSlider({
-    Name = "transparency",
-    Range = {0, 0.95},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = FacingVisual.BoxFill,
-    Flag = "FV_BoxFill",
+BoxSection:CreateSlider({
+    Title = "transparency", Range = {0, 0.95}, Increment = 0.05, Suffix = "",
+    Default = FacingVisual.BoxFill,
     Callback = function(v) FacingVisual.BoxFill = v end,
 })
-BoxTab:CreateColorPicker({
-    Name = "pass color",
-    Color = FacingVisual.PassColor,
-    Flag = "FV_PassColor",
+BoxSection:CreateColorPicker({
+    Title = "pass color",
+    Default = FacingVisual.PassColor,
     Callback = function(c) FacingVisual.PassColor = c end,
 })
-BoxTab:CreateColorPicker({
-    Name = "in range color",
-    Color = FacingVisual.InRangeColor,
-    Flag = "FV_InRangeColor",
+BoxSection:CreateColorPicker({
+    Title = "in range color",
+    Default = FacingVisual.InRangeColor,
     Callback = function(c) FacingVisual.InRangeColor = c end,
 })
-BoxTab:CreateColorPicker({
-    Name = "out range color",
-    Color = FacingVisual.OutRangeColor,
-    Flag = "FV_OutRangeColor",
+BoxSection:CreateColorPicker({
+    Title = "out range color",
+    Default = FacingVisual.OutRangeColor,
     Callback = function(c) FacingVisual.OutRangeColor = c end,
 })
-
-BoxTab:CreateSection("timing")
-BoxTab:CreateSlider({
-    Name = "flash duration",
-    Range = {0.05, 1.0},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = FacingVisual.FlashDuration,
-    Flag = "FV_FlashDur",
+BoxSection:CreateSlider({
+    Title = "flash duration", Range = {0.05, 1.0}, Increment = 0.05, Suffix = "",
+    Default = FacingVisual.FlashDuration,
     Callback = function(v) FacingVisual.FlashDuration = v end,
 })
-BoxTab:CreateSlider({
-    Name = "fade",
-    Range = {0.0, 1.0},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = FacingVisual.FlashFade,
-    Flag = "FV_FlashFade",
+BoxSection:CreateSlider({
+    Title = "fade", Range = {0.0, 1.0}, Increment = 0.05, Suffix = "",
+    Default = FacingVisual.FlashFade,
     Callback = function(v) FacingVisual.FlashFade = v end,
 })
-
-BoxTab:CreateSection("extra")
-BoxTab:CreateToggle({
-    Name = "flash on enter range",
-    CurrentValue = false,
-    Flag = "FV_FlashEnter",
+BoxSection:CreateToggle({
+    Title = "flash on enter range", Default = false,
     Callback = function(v) FacingVisual.FlashOnEnterRange = v end,
 })
-BoxTab:CreateToggle({
-    Name = "flash on facing flip",
-    CurrentValue = false,
-    Flag = "FV_FlashFlip",
+BoxSection:CreateToggle({
+    Title = "flash on facing flip", Default = false,
     Callback = function(v) FacingVisual.FlashOnFacingFlip = v end,
 })
-BoxTab:CreateToggle({
-    Name = "flash on block fire",
-    CurrentValue = false,
-    Flag = "FV_FlashBlock",
+BoxSection:CreateToggle({
+    Title = "flash on block fire", Default = false,
     Callback = function(v) FacingVisual.FlashOnBlock = v end,
 })
-BoxTab:CreateButton({
-    Name = "reset 6/15/6",
+BoxSection:CreateButton({
+    Title = "reset 6/15/6",
     Callback = function()
         FacingVisual.BoxWidth = 6
         FacingVisual.BoxLength = 15
@@ -2217,202 +2083,35 @@ BoxTab:CreateButton({
 })
 
 -- STAB
-StabTab:CreateSection("main")
-StabTab:CreateToggle({
-    Name = "enabled",
-    CurrentValue = false,
-    Flag = "Stab_On",
+local StabSection = StabTab:CreateSection("stab")
+StabSection:CreateToggle({
+    Title = "enabled", Default = false,
     Callback = function(v) STAB.Enabled = v end,
 })
-StabTab:CreateKeybind({
-    Name = "manual stab",
-    CurrentKeybind = "H",
-    HoldToInteract = false,
-    Flag = "Stab_Manual",
+StabSection:CreateKeybind({
+    Title = "manual stab",
+    Default = "H",
     Callback = function() task.spawn(stabActivate) end,
 })
-StabTab:CreateSlider({
-    Name = "behind offset",
-    Range = {0.5, 6},
-    Increment = 0.1,
-    Suffix = "",
-    CurrentValue = STAB.BehindOffset,
-    Flag = "Stab_Offset",
+StabSection:CreateSlider({
+    Title = "behind offset", Range = {0.5, 6}, Increment = 0.1, Suffix = "",
+    Default = STAB.BehindOffset,
     Callback = function(v) STAB.BehindOffset = v end,
 })
-StabTab:CreateSlider({
-    Name = "max range",
-    Range = {10, 150},
-    Increment = 5,
-    Suffix = "",
-    CurrentValue = STAB.MaxRange,
-    Flag = "Stab_Range",
+StabSection:CreateSlider({
+    Title = "max range", Range = {10, 150}, Increment = 5, Suffix = "",
+    Default = STAB.MaxRange,
     Callback = function(v) STAB.MaxRange = v end,
 })
-StabTab:CreateSlider({
-    Name = "cooldown",
-    Range = {0.1, 2},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = STAB.Cooldown,
-    Flag = "Stab_CD",
+StabSection:CreateSlider({
+    Title = "cooldown", Range = {0.1, 2}, Increment = 0.05, Suffix = "",
+    Default = STAB.Cooldown,
     Callback = function(v) STAB.Cooldown = v end,
 })
-StabTab:CreateSlider({
-    Name = "tp delay",
-    Range = {0, 0.2},
-    Increment = 0.01,
-    Suffix = "",
-    CurrentValue = STAB.TeleportDelay,
-    Flag = "Stab_TPDelay",
+StabSection:CreateSlider({
+    Title = "tp delay", Range = {0, 0.2}, Increment = 0.01, Suffix = "",
+    Default = STAB.TeleportDelay,
     Callback = function(v) STAB.TeleportDelay = v end,
 })
-StabTab:CreateSlider({
-    Name = "follow duration",
-    Range = {0.1, 2},
-    Increment = 0.05,
-    Suffix = "",
-    CurrentValue = STAB.FollowDuration,
-    Flag = "Stab_Follow",
-    Callback = function(v) STAB.FollowDuration = v end,
-})
-StabTab:CreateButton({
-    Name = "stab now",
-    Callback = function() task.spawn(stabActivate) end,
-})
-
--- MISC
-MiscTab:CreateSection("azure")
-MiscTab:CreateToggle({
-    Name = "auto qte",
-    CurrentValue = false,
-    Flag = "AZ_QTE",
-    Callback = function(v) AZ.AutoQTE = v if v then azHookQTE() end end,
-})
-MiscTab:CreateToggle({
-    Name = "inf qte",
-    CurrentValue = false,
-    Flag = "AZ_Inf",
-    Callback = function(v) AZ.InfiniteQTE = v if v then azHookQTE() end end,
-})
-
-MiscTab:CreateSection("auto generator")
-MiscTab:CreateToggle({
-    Name = "enabled",
-    CurrentValue = false,
-    Flag = "Gen_On",
-    Callback = function(v) AUTOGEN.Enabled = v end,
-})
-MiscTab:CreateSlider({
-    Name = "range",
-    Range = {5, 30},
-    Increment = 1,
-    Suffix = "",
-    CurrentValue = AUTOGEN.MaxDistance,
-    Flag = "Gen_Range",
-    Callback = function(v) AUTOGEN.MaxDistance = v end,
-})
-MiscTab:CreateSlider({
-    Name = "interval",
-    Range = {0.3, 5},
-    Increment = 0.1,
-    Suffix = "",
-    CurrentValue = AUTOGEN.Cooldown,
-    Flag = "Gen_CD",
-    Callback = function(v) AUTOGEN.Cooldown = v end,
-})
-
-MiscTab:CreateSection("hitbox expander")
-MiscTab:CreateToggle({
-    Name = "enabled",
-    CurrentValue = false,
-    Flag = "HBE_On",
-    Callback = function(v) if v then hbeStart() else hbeStop() end end,
-})
-MiscTab:CreateDropdown({
-    Name = "mode",
-    Options = {"Scale", "Velocity"},
-    CurrentOption = "Scale",
-    Flag = "HBE_Mode",
-    Callback = function(opt)
-        HBE.Mode = opt or "Scale"
-        if HBE.Enabled then hbeStop() hbeStart() end
-    end,
-})
-MiscTab:CreateSlider({
-    Name = "size multiplier",
-    Range = {1, 5},
-    Increment = 0.1,
-    Suffix = "x",
-    CurrentValue = HBE.SizeMultiplier,
-    Flag = "HBE_Mult",
-    Callback = function(v) HBE.SizeMultiplier = v if HBE.Enabled then hbeApply() end end,
-})
-MiscTab:CreateToggle({
-    Name = "only on attack",
-    CurrentValue = false,
-    Flag = "HBE_OnlyAtk",
-    Callback = function(v)
-        HBE.ApplyOnlyOnAttack = v
-        if HBE.Enabled and lp.Character then hbeDisconnectAll() hbeHookCharacter(lp.Character) end
-    end,
-})
-MiscTab:CreateToggle({
-    Name = "visualize",
-    CurrentValue = false,
-    Flag = "HBE_Visual",
-    Callback = function(v) HBE.Visualize = v hbeApplyVisual() end,
-})
-MiscTab:CreateButton({ Name = "1.25x", Callback = function() HBE.SizeMultiplier = 1.25 if HBE.Enabled then hbeApply() end end })
-MiscTab:CreateButton({ Name = "1.50x", Callback = function() HBE.SizeMultiplier = 1.5  if HBE.Enabled then hbeApply() end end })
-MiscTab:CreateButton({ Name = "2.00x", Callback = function() HBE.SizeMultiplier = 2.0  if HBE.Enabled then hbeApply() end end })
-
-MiscTab:CreateSection("utility")
-MiscTab:CreateButton({
-    Name = "fullbright",
-    Callback = function()
-        Lighting.Ambient = Color3.new(1,1,1)
-        Lighting.OutdoorAmbient = Color3.new(1,1,1)
-        Lighting.Brightness = 2; Lighting.ClockTime = 12
-        local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
-        if atmo then atmo:Destroy() end
-    end,
-})
-MiscTab:CreateButton({
-    Name = "show chat",
-    Callback = function()
-        pcall(function()
-            local cfg = TextChatService:FindFirstChildOfClass("ChatWindowConfiguration")
-            local inp = TextChatService:FindFirstChildOfClass("ChatInputBarConfiguration")
-            if cfg then cfg.Enabled = true end
-            if inp then inp.Enabled = true end
-        end)
-    end,
-})
-MiscTab:CreateButton({
-    Name = "reset character",
-    Callback = function()
-        local char = lp.Character
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if hum then hum.Health = 0 end
-    end,
-})
-MiscTab:CreateButton({
-    Name = "anti lag",
-    Callback = function()
-        task.spawn(function()
-            pcall(function()
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/zxcursedsocute/Forsaken-Script/refs/heads/main/anti%20lag%20test"))()
-            end)
-        end)
-    end,
-})
-
-Rayfield:LoadConfiguration()
-
-Rayfield:Notify({
-    Title = "hunter",
-    Content = "loaded",
-    Duration = 4,
-    Image = 4483362458,
-})
+StabSection:CreateSlider({
+    Title = "follow duration
