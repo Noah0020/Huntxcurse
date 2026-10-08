@@ -1,24 +1,22 @@
 -- hunter hub
 -- esp / stam / autoblock / hdt / aim / box / stab / misc
--- GUI: Obsidian (red "Blood" theme, theme changer via gear icon / theme tab)
+-- GUI: WindUI (red "Blood" theme, theme changer via WindUI:SetTheme / AddTheme)
 
 repeat task.wait() until game:IsLoaded()
 
 -- =========================================================
--- Load Obsidian (official repo: deividcomsono/Obsidian)
+-- Load WindUI (official repo: Footagesus/WindUI)
 -- =========================================================
-local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
-
-local Library
+local WindUI
 do
     local ok, res = pcall(function()
-        return loadstring(game:HttpGet(repo .. "Library.lua"))()
+        return loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
     end)
     if not (ok and type(res) == "table" and res.CreateWindow) then
-        warn("[hunter] Obsidian failed to load:", res)
+        warn("[hunter] WindUI failed to load:", res)
         return
     end
-    Library = res
+    WindUI = res
 end
 
 local Players           = game:GetService("Players")
@@ -1803,110 +1801,123 @@ if KillersFolder then
 end
 
 -- =========================================================
--- UI (Obsidian) - red "Blood" theme, built-in theme changer via gear icon
+-- UI (WindUI) - red "Blood" theme, theme changer via theme tab
 -- =========================================================
+
+-- FIX: WindUI uses AddTheme + SetTheme instead of Obsidian's ThemeManager addon.
+WindUI:AddTheme({
+    Name = "Blood",
+    Accent = Color3.fromHex("#b30000"),
+    Background = Color3.fromHex("#120000"),
+    Outline = Color3.fromHex("#ff4d4d"),
+    Text = Color3.fromHex("#ffcccc"),
+    Placeholder = Color3.fromHex("#7a0000"),
+    Button = Color3.fromHex("#3d0000"),
+    Icon = Color3.fromHex("#ff6666"),
+})
 
 -- FIX: wrap UI build in pcall so failures print instead of silently showing nothing.
 local Window
 local uiOk, uiErr = pcall(function()
-    Window = Library:CreateWindow({
+    Window = WindUI:CreateWindow({
         Title = "hunter",
-        Subtitle = "gg",
+        Author = "gg",
         Theme = "Blood",
         Size = UDim2.fromOffset(620, 500),
         MinSize = Vector2.new(480, 380),
-        Resizeable = true,
-        ToggleKeybind = Enum.KeyCode.RightShift,
+        ToggleKey = Enum.KeyCode.RightShift,
+        Resizable = true,
+        Folder = "hunter_hub",
     })
 
-    local function makeTab(name)
-        return Window:CreateTab(name, 4483362458)
+    local function makeTab(name, icon)
+        return Window:Tab({ Title = name, Icon = icon or "circle" })
     end
 
-    local ESPTab       = makeTab("esp")
-    local StamTab      = makeTab("stam")
-    local AutoBlockTab = makeTab("auto block")
-    local HDTTab       = makeTab("hdt")
-    local AimTab       = makeTab("aim")
-    local BoxTab       = makeTab("box")
-    local StabTab      = makeTab("stab")
-    local MiscTab      = makeTab("misc")
+    local ESPTab       = makeTab("esp", "eye")
+    local StamTab      = makeTab("stam", "zap")
+    local AutoBlockTab = makeTab("auto block", "shield")
+    local HDTTab       = makeTab("hdt", "mouse-pointer")
+    local AimTab       = makeTab("aim", "crosshair")
+    local BoxTab       = makeTab("box", "box")
+    local StabTab      = makeTab("stab", "sword")
+    local MiscTab      = makeTab("misc", "settings")
 
-    -- Theme tab via ThemeManager addon (safe: skip if unavailable)
-    pcall(function()
-        local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
-        if ThemeManager then
-            ThemeManager:SetLibrary(Library)
-            ThemeManager:SetFolder("hunter_hub")
-            ThemeManager:ApplyToTab(Window:CreateTab("theme", 4483362458))
-        end
-    end)
+    -- FIX: WindUI has no ThemeManager addon; build a theme tab that calls SetTheme.
+    local ThemeTab = makeTab("theme", "palette")
+    local ThemeSection = ThemeTab:Section({ Title = "theme" })
+    ThemeSection:Button({ Title = "Blood (default)", Callback = function() WindUI:SetTheme("Blood") end })
+    ThemeSection:Button({ Title = "Dark",           Callback = function() WindUI:SetTheme("Dark") end })
+    ThemeSection:Button({ Title = "Crimson",        Callback = function() WindUI:SetTheme("Crimson") end })
 
     -- ============ ESP ============
-    local ESPSection = ESPTab:CreateSection("players & world")
-    ESPSection:CreateToggle({ Name = "killer",     Default = false, Callback = function(v) CFG.ESPKillers    = v if v then refreshKillers()    else clearKillerESP()    end end })
-    ESPSection:CreateToggle({ Name = "survivor",   Default = false, Callback = function(v) CFG.ESPSurvivors  = v if v then refreshSurvivors()  else clearSurvivorESP()  end end })
-    ESPSection:CreateToggle({ Name = "generators", Default = false, Callback = function(v) CFG.ESPGenerators = v if v then refreshGenerators() else clearGeneratorESP() end end })
-    ESPSection:CreateToggle({ Name = "items",      Default = false, Callback = function(v) CFG.ESPItems      = v if v then refreshItems()      else clearItemESP()      end end })
+    local ESPSection = ESPTab:Section({ Title = "players & world" })
+    ESPSection:Toggle({ Title = "killer",     Value = false, Callback = function(v) CFG.ESPKillers    = v if v then refreshKillers()    else clearKillerESP()    end end })
+    ESPSection:Toggle({ Title = "survivor",   Value = false, Callback = function(v) CFG.ESPSurvivors  = v if v then refreshSurvivors()  else clearSurvivorESP()  end end })
+    ESPSection:Toggle({ Title = "generators", Value = false, Callback = function(v) CFG.ESPGenerators = v if v then refreshGenerators() else clearGeneratorESP() end end })
+    ESPSection:Toggle({ Title = "items",      Value = false, Callback = function(v) CFG.ESPItems      = v if v then refreshItems()      else clearItemESP()      end end })
 
     -- ============ STAM ============
-    local StamSection = StamTab:CreateSection("sprint")
+    local StamSection = StamTab:Section({ Title = "sprint" })
     if not Sprinting then
-        StamSection:CreateParagraph({ Title = "note", Content = "no sprinting module found" })
+        StamSection:Paragraph({ Title = "note", Desc = "no sprinting module found" })
     else
-        StamSection:CreateToggle({ Name = "infinite stamina", Default = false,
+        StamSection:Toggle({ Title = "infinite stamina", Value = false,
             Callback = function(v) CFG.InfiniteStamina = v if v then startInfiniteStamina() else stopInfiniteStamina() end end })
-        StamSection:CreateSlider({ Name = "max",          Range = {1, 1000}, Increment = 1, Suffix = "", Default = Sprinting.MaxStamina or 100, Callback = function(v) if Sprinting then Sprinting.MaxStamina = v end end })
-        StamSection:CreateSlider({ Name = "sprint speed", Range = {1, 40},   Increment = 1, Suffix = "", Default = Sprinting.SprintSpeed or 26, Callback = function(v) if Sprinting then Sprinting.SprintSpeed = v end end })
-        StamSection:CreateSlider({ Name = "gain",         Range = {1, 200},  Increment = 1, Suffix = "", Default = Sprinting.StaminaGain or 20, Callback = function(v) if Sprinting then Sprinting.StaminaGain = v end end })
-        StamSection:CreateSlider({ Name = "loss",         Range = {0, 50},   Increment = 1, Suffix = "", Default = Sprinting.StaminaLoss or 10, Callback = function(v) if Sprinting then Sprinting.StaminaLoss = v end end })
+        StamSection:Slider({ Title = "max",          Value = { Min = 1, Max = 1000, Default = Sprinting.MaxStamina or 100 }, Callback = function(v) if Sprinting then Sprinting.MaxStamina = v end end })
+        StamSection:Slider({ Title = "sprint speed", Value = { Min = 1, Max = 40,   Default = Sprinting.SprintSpeed or 26 }, Callback = function(v) if Sprinting then Sprinting.SprintSpeed = v end end })
+        StamSection:Slider({ Title = "gain",         Value = { Min = 1, Max = 200,  Default = Sprinting.StaminaGain or 20 }, Callback = function(v) if Sprinting then Sprinting.StaminaGain = v end end })
+        StamSection:Slider({ Title = "loss",         Value = { Min = 0, Max = 50,   Default = Sprinting.StaminaLoss or 10 }, Callback = function(v) if Sprinting then Sprinting.StaminaLoss = v end end })
     end
 
     -- ============ AUTO BLOCK ============
-    local ABSection = AutoBlockTab:CreateSection("auto block")
-    ABSection:CreateToggle({ Name = "enabled", Default = false, Callback = function(v) CFG.AutoBlockEnabled = v end })
-    ABSection:CreateParagraph({ Title = "info", Content = "auto block only fires when YOU are inside the killer's forward view cone." })
-    ABSection:CreateSlider({ Name = "range", Range = {8, 60}, Increment = 1, Suffix = "", Default = CFG.DetectionRange, Callback = function(v) CFG.DetectionRange = v end })
-    ABSection:CreateSlider({ Name = "delay", Range = {0, 0.5}, Increment = 0.05, Suffix = "", Default = 0, Callback = function(v) CFG.BlockDelay = v end })
-    ABSection:CreateToggle({ Name = "sound trigger",     Default = true, Callback = function(v) CFG.SoundTrigger = v end })
-    ABSection:CreateToggle({ Name = "animation trigger", Default = true, Callback = function(v) CFG.AnimTrigger  = v end })
-    ABSection:CreateToggle({ Name = "wall check",        Default = true, Callback = function(v) CFG.WallCheck    = v end })
-    ABSection:CreateToggle({ Name = "facing check",      Default = true, Callback = function(v) CFG.FacingCheck  = v end })
-    ABSection:CreateSlider({ Name = "facing dot", Range = {-1, 1}, Increment = 0.05, Suffix = "", Default = CFG.FacingDot, Callback = function(v) CFG.FacingDot = v end })
+    local ABSection = AutoBlockTab:Section({ Title = "auto block" })
+    ABSection:Toggle({ Title = "enabled", Value = false, Callback = function(v) CFG.AutoBlockEnabled = v end })
+    ABSection:Paragraph({ Title = "info", Desc = "auto block only fires when YOU are inside the killer's forward view cone." })
+    ABSection:Slider({ Title = "range", Value = { Min = 8, Max = 60, Default = CFG.DetectionRange }, Callback = function(v) CFG.DetectionRange = v end })
+    ABSection:Slider({ Title = "delay", Value = { Min = 0, Max = 0.5, Default = 0 }, Callback = function(v) CFG.BlockDelay = v end })
+    ABSection:Toggle({ Title = "sound trigger",     Value = true, Callback = function(v) CFG.SoundTrigger = v end })
+    ABSection:Toggle({ Title = "animation trigger", Value = true, Callback = function(v) CFG.AnimTrigger  = v end })
+    ABSection:Toggle({ Title = "wall check",        Value = true, Callback = function(v) CFG.WallCheck    = v end })
+    ABSection:Toggle({ Title = "facing check",      Value = true, Callback = function(v) CFG.FacingCheck  = v end })
+    ABSection:Slider({ Title = "facing dot", Value = { Min = -1, Max = 1, Default = CFG.FacingDot }, Callback = function(v) CFG.FacingDot = v end })
 
     -- ============ HDT ============
-    local HDTSection = HDTTab:CreateSection("hdt")
-    HDTSection:CreateToggle({ Name = "enabled", Default = false, Callback = function(v) HDT.Enabled = v end })
-    HDTSection:CreateToggle({ Name = "auto on block", Default = true, Callback = function(v) HDT.AutoTrigger = v end })
-    HDTSection:CreateSlider({ Name = "speed", Range = {2, 40}, Increment = 0.5, Suffix = "", Default = HDT.Speed, Callback = function(v) HDT.Speed = v end })
-    HDTSection:CreateSlider({ Name = "delay", Range = {0, 2}, Increment = 0.05, Suffix = "", Default = HDT.Delay, Callback = function(v) HDT.Delay = v end })
-    HDTSection:CreateSlider({ Name = "stop distance", Range = {1, 8}, Increment = 0.1, Suffix = "", Default = HDT.StopDistance, Callback = function(v) HDT.StopDistance = v end })
-    HDTSection:CreateSlider({ Name = "max drag time", Range = {0.2, 3}, Increment = 0.05, Suffix = "", Default = HDT.SafetyTimeout, Callback = function(v) HDT.SafetyTimeout = v end })
-    HDTSection:CreateSlider({ Name = "re-trigger cd", Range = {0, 5}, Increment = 0.1, Suffix = "", Default = HDT.ReTriggerCooldown, Callback = function(v) HDT.ReTriggerCooldown = v end })
-    HDTSection:CreateKeybind({ Name = "manual trigger", CurrentKeybind = "Q", HoldToInteract = false, Callback = function() HDT.Trigger() end })
+    local HDTSection = HDTTab:Section({ Title = "hdt" })
+    HDTSection:Toggle({ Title = "enabled", Value = false, Callback = function(v) HDT.Enabled = v end })
+    HDTSection:Toggle({ Title = "auto on block", Value = true, Callback = function(v) HDT.AutoTrigger = v end })
+    HDTSection:Slider({ Title = "speed", Value = { Min = 2, Max = 40, Default = HDT.Speed }, Callback = function(v) HDT.Speed = v end })
+    HDTSection:Slider({ Title = "delay", Value = { Min = 0, Max = 2, Default = HDT.Delay }, Callback = function(v) HDT.Delay = v end })
+    HDTSection:Slider({ Title = "stop distance", Value = { Min = 1, Max = 8, Default = HDT.StopDistance }, Callback = function(v) HDT.StopDistance = v end })
+    HDTSection:Slider({ Title = "max drag time", Value = { Min = 0.2, Max = 3, Default = HDT.SafetyTimeout }, Callback = function(v) HDT.SafetyTimeout = v end })
+    HDTSection:Slider({ Title = "re-trigger cd", Value = { Min = 0, Max = 5, Default = HDT.ReTriggerCooldown }, Callback = function(v) HDT.ReTriggerCooldown = v end })
+    -- FIX: WindUI keybinds return a key string; convert to Enum.KeyCode.
+    HDTSection:Keybind({ Title = "manual trigger", Value = "Q", Callback = function(v)
+        if v and Enum.KeyCode[v] then HDT.Trigger() end
+    end })
 
     -- ============ AIM ============
-    local AimSection = AimTab:CreateSection("aim")
-    AimSection:CreateToggle({ Name = "enabled", Default = false, Callback = function(v) AIM.Enabled = v end })
-    AimSection:CreateKeybind({ Name = "pulse 3s", CurrentKeybind = "C", HoldToInteract = false, Callback = function() AIM.AimFor(3.0) end })
-    AimSection:CreateToggle({ Name = "debug", Default = false, Callback = function(v) AIM.Debug = v end })
-    AimSection:CreateToggle({ Name = "aim on stun tap", Default = true, Callback = function(v)
+    local AimSection = AimTab:Section({ Title = "aim" })
+    AimSection:Toggle({ Title = "enabled", Value = false, Callback = function(v) AIM.Enabled = v end })
+    AimSection:Keybind({ Title = "pulse 3s", Value = "C", Callback = function(v) if v and Enum.KeyCode[v] then AIM.AimFor(3.0) end end })
+    AimSection:Toggle({ Title = "debug", Value = false, Callback = function(v) AIM.Debug = v end })
+    AimSection:Toggle({ Title = "aim on stun tap", Value = true, Callback = function(v)
         AbilityHook.Enabled = v
         if v then ahScanContainer() ahInstallUiWatcher() end
     end })
-    AimSection:CreateSlider({ Name = "ability cooldown", Range = {0, 60}, Increment = 0.5, Suffix = "", Default = AbilityHook.Cooldown, Callback = function(v) AbilityHook.Cooldown = v end })
-    AimSection:CreateSlider({ Name = "confirm window", Range = {0.1, 1.0}, Increment = 0.05, Suffix = "", Default = AbilityHook.PendingWindow, Callback = function(v) AbilityHook.PendingWindow = v end })
-    AimSection:CreateParagraph({ Title = "info", Content = "aim fires only after the ability's Action animation actually plays. window = max wait after the tap." })
-    AimSection:CreateSlider({ Name = "lock multiplier", Range = {0.5, 4}, Increment = 0.1, Suffix = "", Default = AbilityHook.LockMultiplier, Callback = function(v) AbilityHook.LockMultiplier = v end })
-    AimSection:CreateDropdown({ Name = "aim mode", Options = {"Camera", "HRP", "HRP+Camera"}, CurrentOption = "Camera", Callback = function(opt) AIM.AimMode = opt end })
-    AimSection:CreateSlider({ Name = "smooth", Range = {0.05, 1}, Increment = 0.05, Suffix = "", Default = AIM.Smooth, Callback = function(v) AIM.Smooth = v end })
-    AimSection:CreateDropdown({ Name = "prediction mode", Options = {"Off", "Ping", "Velocity", "Both"}, CurrentOption = "Both", Callback = function(opt) AIM.PredictMode = opt end })
-    AimSection:CreateSlider({ Name = "velocity lead", Range = {0, 0.5}, Increment = 0.05, Suffix = "", Default = AIM.PredictLead, Callback = function(v) AIM.PredictLead = v end })
-    AimSection:CreateSlider({ Name = "ping mult", Range = {0, 2}, Increment = 0.05, Suffix = "", Default = AIM.PingMult, Callback = function(v) AIM.PingMult = v end })
+    AimSection:Slider({ Title = "ability cooldown", Value = { Min = 0, Max = 60, Default = AbilityHook.Cooldown }, Callback = function(v) AbilityHook.Cooldown = v end })
+    AimSection:Slider({ Title = "confirm window", Value = { Min = 0.1, Max = 1.0, Default = AbilityHook.PendingWindow }, Callback = function(v) AbilityHook.PendingWindow = v end })
+    AimSection:Paragraph({ Title = "info", Desc = "aim fires only after the ability's Action animation actually plays. window = max wait after the tap." })
+    AimSection:Slider({ Title = "lock multiplier", Value = { Min = 0.5, Max = 4, Default = AbilityHook.LockMultiplier }, Callback = function(v) AbilityHook.LockMultiplier = v end })
+    AimSection:Dropdown({ Title = "aim mode", Values = {"Camera", "HRP", "HRP+Camera"}, Value = "Camera", Callback = function(opt) AIM.AimMode = opt end })
+    AimSection:Slider({ Title = "smooth", Value = { Min = 0.05, Max = 1, Default = AIM.Smooth }, Callback = function(v) AIM.Smooth = v end })
+    AimSection:Dropdown({ Title = "prediction mode", Values = {"Off", "Ping", "Velocity", "Both"}, Value = "Both", Callback = function(opt) AIM.PredictMode = opt end })
+    AimSection:Slider({ Title = "velocity lead", Value = { Min = 0, Max = 0.5, Default = AIM.PredictLead }, Callback = function(v) AIM.PredictLead = v end })
+    AimSection:Slider({ Title = "ping mult", Value = { Min = 0, Max = 2, Default = AIM.PingMult }, Callback = function(v) AIM.PingMult = v end })
 
     -- ============ BOX ============
-    local BoxSection = BoxTab:CreateSection("box")
-    BoxSection:CreateToggle({ Name = "enabled", Default = false, Callback = function(v)
+    local BoxSection = BoxTab:Section({ Title = "box" })
+    BoxSection:Toggle({ Title = "enabled", Value = false, Callback = function(v)
         FacingVisual.BoxEnabled = v
         if not v then
             for _, data in pairs(FacingVisual.boxVisuals) do
@@ -1916,66 +1927,67 @@ local uiOk, uiErr = pcall(function()
             FacingVisual.boxVisuals = {}
         end
     end })
-    BoxSection:CreateToggle({ Name = "flash on killer m1", Default = true, Callback = function(v) FacingVisual.FlashOnKillerM1 = v end })
-    BoxSection:CreateSlider({ Name = "width",  Range = {0, 30}, Increment = 0.5, Suffix = "", Default = FacingVisual.BoxWidth,  Callback = function(v) FacingVisual.BoxWidth = v end })
-    BoxSection:CreateSlider({ Name = "length", Range = {0, 30}, Increment = 0.5, Suffix = "", Default = FacingVisual.BoxLength, Callback = function(v) FacingVisual.BoxLength = v end })
-    BoxSection:CreateSlider({ Name = "height", Range = {0, 30}, Increment = 0.5, Suffix = "", Default = FacingVisual.BoxHeight, Callback = function(v) FacingVisual.BoxHeight = v end })
-    BoxSection:CreateToggle({ Name = "auto width", Default = false, Callback = function(v) FacingVisual.AutoWidth = v end })
-    BoxSection:CreateSlider({ Name = "transparency", Range = {0, 0.95}, Increment = 0.05, Suffix = "", Default = FacingVisual.BoxFill, Callback = function(v) FacingVisual.BoxFill = v end })
-    BoxSection:CreateColorPicker({ Name = "pass color",      Color = FacingVisual.PassColor,     Callback = function(c) FacingVisual.PassColor = c end })
-    BoxSection:CreateColorPicker({ Name = "in range color",  Color = FacingVisual.InRangeColor,  Callback = function(c) FacingVisual.InRangeColor = c end })
-    BoxSection:CreateColorPicker({ Name = "out range color", Color = FacingVisual.OutRangeColor, Callback = function(c) FacingVisual.OutRangeColor = c end })
-    BoxSection:CreateSlider({ Name = "flash duration", Range = {0.05, 1.0}, Increment = 0.05, Suffix = "", Default = FacingVisual.FlashDuration, Callback = function(v) FacingVisual.FlashDuration = v end })
-    BoxSection:CreateSlider({ Name = "fade", Range = {0.0, 1.0}, Increment = 0.05, Suffix = "", Default = FacingVisual.FlashFade, Callback = function(v) FacingVisual.FlashFade = v end })
-    BoxSection:CreateToggle({ Name = "flash on enter range", Default = false, Callback = function(v) FacingVisual.FlashOnEnterRange = v end })
-    BoxSection:CreateToggle({ Name = "flash on facing flip", Default = false, Callback = function(v) FacingVisual.FlashOnFacingFlip = v end })
-    BoxSection:CreateToggle({ Name = "flash on block fire",  Default = false, Callback = function(v) FacingVisual.FlashOnBlock = v end })
-    BoxSection:CreateButton({ Name = "reset 6/15/6", Callback = function()
+    BoxSection:Toggle({ Title = "flash on killer m1", Value = true, Callback = function(v) FacingVisual.FlashOnKillerM1 = v end })
+    BoxSection:Slider({ Title = "width",  Value = { Min = 0, Max = 30, Default = FacingVisual.BoxWidth },  Callback = function(v) FacingVisual.BoxWidth = v end })
+    BoxSection:Slider({ Title = "length", Value = { Min = 0, Max = 30, Default = FacingVisual.BoxLength }, Callback = function(v) FacingVisual.BoxLength = v end })
+    BoxSection:Slider({ Title = "height", Value = { Min = 0, Max = 30, Default = FacingVisual.BoxHeight }, Callback = function(v) FacingVisual.BoxHeight = v end })
+    BoxSection:Toggle({ Title = "auto width", Value = false, Callback = function(v) FacingVisual.AutoWidth = v end })
+    BoxSection:Slider({ Title = "transparency", Value = { Min = 0, Max = 0.95, Default = FacingVisual.BoxFill }, Callback = function(v) FacingVisual.BoxFill = v end })
+    BoxSection:ColorPicker({ Title = "pass color",      Color = FacingVisual.PassColor,     Callback = function(c) FacingVisual.PassColor = c end })
+    BoxSection:ColorPicker({ Title = "in range color",  Color = FacingVisual.InRangeColor,  Callback = function(c) FacingVisual.InRangeColor = c end })
+    BoxSection:ColorPicker({ Title = "out range color", Color = FacingVisual.OutRangeColor, Callback = function(c) FacingVisual.OutRangeColor = c end })
+    BoxSection:Slider({ Title = "flash duration", Value = { Min = 0.05, Max = 1.0, Default = FacingVisual.FlashDuration }, Callback = function(v) FacingVisual.FlashDuration = v end })
+    BoxSection:Slider({ Title = "fade", Value = { Min = 0.0, Max = 1.0, Default = FacingVisual.FlashFade }, Callback = function(v) FacingVisual.FlashFade = v end })
+    BoxSection:Toggle({ Title = "flash on enter range", Value = false, Callback = function(v) FacingVisual.FlashOnEnterRange = v end })
+    BoxSection:Toggle({ Title = "flash on facing flip", Value = false, Callback = function(v) FacingVisual.FlashOnFacingFlip = v end })
+    BoxSection:Toggle({ Title = "flash on block fire",  Value = false, Callback = function(v) FacingVisual.FlashOnBlock = v end })
+    BoxSection:Button({ Title = "reset 6/15/6", Callback = function()
         FacingVisual.BoxWidth = 6 FacingVisual.BoxLength = 15 FacingVisual.BoxHeight = 6 FacingVisual.AutoWidth = false
     end })
 
     -- ============ STAB ============
-    local StabSection = StabTab:CreateSection("stab")
-    StabSection:CreateToggle({ Name = "enabled", Default = false, Callback = function(v) STAB.Enabled = v end })
-    StabSection:CreateKeybind({ Name = "manual stab", CurrentKeybind = "H", HoldToInteract = false,
-        Callback = function() task.spawn(function() stabActivate(true) end) end })
-    StabSection:CreateSlider({ Name = "behind offset", Range = {0.5, 6}, Increment = 0.1, Suffix = "", Default = STAB.BehindOffset, Callback = function(v) STAB.BehindOffset = v end })
-    StabSection:CreateSlider({ Name = "max range", Range = {10, 150}, Increment = 5, Suffix = "", Default = STAB.MaxRange, Callback = function(v) STAB.MaxRange = v end })
-    StabSection:CreateSlider({ Name = "cooldown", Range = {0.1, 2}, Increment = 0.05, Suffix = "", Default = STAB.Cooldown, Callback = function(v) STAB.Cooldown = v end })
-    StabSection:CreateSlider({ Name = "tp delay", Range = {0, 0.2}, Increment = 0.01, Suffix = "", Default = STAB.TeleportDelay, Callback = function(v) STAB.TeleportDelay = v end })
-    StabSection:CreateSlider({ Name = "follow duration", Range = {0.1, 2}, Increment = 0.05, Suffix = "", Default = STAB.FollowDuration, Callback = function(v) STAB.FollowDuration = v end })
-    StabSection:CreateButton({ Name = "stab now", Callback = function() task.spawn(function() stabActivate(true) end) end })
+    local StabSection = StabTab:Section({ Title = "stab" })
+    StabSection:Toggle({ Title = "enabled", Value = false, Callback = function(v) STAB.Enabled = v end })
+    StabSection:Keybind({ Title = "manual stab", Value = "H", Callback = function(v)
+        if v and Enum.KeyCode[v] then task.spawn(function() stabActivate(true) end) end
+    end })
+    StabSection:Slider({ Title = "behind offset", Value = { Min = 0.5, Max = 6, Default = STAB.BehindOffset }, Callback = function(v) STAB.BehindOffset = v end })
+    StabSection:Slider({ Title = "max range", Value = { Min = 10, Max = 150, Default = STAB.MaxRange }, Callback = function(v) STAB.MaxRange = v end })
+    StabSection:Slider({ Title = "cooldown", Value = { Min = 0.1, Max = 2, Default = STAB.Cooldown }, Callback = function(v) STAB.Cooldown = v end })
+    StabSection:Slider({ Title = "tp delay", Value = { Min = 0, Max = 0.2, Default = STAB.TeleportDelay }, Callback = function(v) STAB.TeleportDelay = v end })
+    StabSection:Slider({ Title = "follow duration", Value = { Min = 0.1, Max = 2, Default = STAB.FollowDuration }, Callback = function(v) STAB.FollowDuration = v end })
+    StabSection:Button({ Title = "stab now", Callback = function() task.spawn(function() stabActivate(true) end) end })
 
     -- ============ MISC ============
-    local MiscSection = MiscTab:CreateSection("misc")
-    MiscSection:CreateToggle({ Name = "auto qte", Default = false, Callback = function(v) AZ.AutoQTE = v if v then azHookQTE() end end })
-    MiscSection:CreateToggle({ Name = "inf qte",  Default = false, Callback = function(v) AZ.InfiniteQTE = v if v then azHookQTE() end end })
-    MiscSection:CreateToggle({ Name = "auto generator", Default = false, Callback = function(v) AUTOGEN.Enabled = v end })
-    MiscSection:CreateSlider({ Name = "gen range",    Range = {5, 30}, Increment = 1, Suffix = "", Default = AUTOGEN.MaxDistance, Callback = function(v) AUTOGEN.MaxDistance = v end })
-    MiscSection:CreateSlider({ Name = "gen interval", Range = {0.3, 5}, Increment = 0.1, Suffix = "", Default = AUTOGEN.Cooldown, Callback = function(v) AUTOGEN.Cooldown = v end })
-    MiscSection:CreateToggle({ Name = "hitbox expander", Default = false, Callback = function(v) if v then hbeStart() else hbeStop() end end })
-    MiscSection:CreateDropdown({ Name = "hbe mode", Options = {"Scale", "Velocity"}, CurrentOption = "Scale", Callback = function(opt)
+    local MiscSection = MiscTab:Section({ Title = "misc" })
+    MiscSection:Toggle({ Title = "auto qte", Value = false, Callback = function(v) AZ.AutoQTE = v if v then azHookQTE() end end })
+    MiscSection:Toggle({ Title = "inf qte",  Value = false, Callback = function(v) AZ.InfiniteQTE = v if v then azHookQTE() end end })
+    MiscSection:Toggle({ Title = "auto generator", Value = false, Callback = function(v) AUTOGEN.Enabled = v end })
+    MiscSection:Slider({ Title = "gen range",    Value = { Min = 5, Max = 30, Default = AUTOGEN.MaxDistance }, Callback = function(v) AUTOGEN.MaxDistance = v end })
+    MiscSection:Slider({ Title = "gen interval", Value = { Min = 0.3, Max = 5, Default = AUTOGEN.Cooldown }, Callback = function(v) AUTOGEN.Cooldown = v end })
+    MiscSection:Toggle({ Title = "hitbox expander", Value = false, Callback = function(v) if v then hbeStart() else hbeStop() end end })
+    MiscSection:Dropdown({ Title = "hbe mode", Values = {"Scale", "Velocity"}, Value = "Scale", Callback = function(opt)
         HBE.Mode = opt or "Scale"
         if HBE.Enabled then hbeStop() hbeStart() end
     end })
-    MiscSection:CreateSlider({ Name = "size multiplier", Range = {1, 5}, Increment = 0.1, Suffix = "x", Default = HBE.SizeMultiplier, Callback = function(v) HBE.SizeMultiplier = v if HBE.Enabled then hbeApply() end end })
-    MiscSection:CreateToggle({ Name = "hbe only on attack", Default = false, Callback = function(v)
+    MiscSection:Slider({ Title = "size multiplier", Value = { Min = 1, Max = 5, Default = HBE.SizeMultiplier }, Callback = function(v) HBE.SizeMultiplier = v if HBE.Enabled then hbeApply() end end })
+    MiscSection:Toggle({ Title = "hbe only on attack", Value = false, Callback = function(v)
         HBE.ApplyOnlyOnAttack = v
         if HBE.Enabled and lp.Character then hbeDisconnectAll() hbeHookCharacter(lp.Character) end
     end })
-    MiscSection:CreateToggle({ Name = "hbe visualize", Default = false, Callback = function(v) HBE.Visualize = v hbeApplyVisual() end })
-    MiscSection:CreateSlider({ Name = "drag cooldown", Range = {0, 5}, Increment = 0.1, Suffix = "s", Default = HBE.DragCooldown, Callback = function(v) HBE.DragCooldown = v end })
-    MiscSection:CreateButton({ Name = "1.25x", Callback = function() HBE.SizeMultiplier = 1.25 if HBE.Enabled then hbeApply() end end })
-    MiscSection:CreateButton({ Name = "1.50x", Callback = function() HBE.SizeMultiplier = 1.5  if HBE.Enabled then hbeApply() end end })
-    MiscSection:CreateButton({ Name = "2.00x", Callback = function() HBE.SizeMultiplier = 2.0  if HBE.Enabled then hbeApply() end end })
-    MiscSection:CreateButton({ Name = "fullbright", Callback = function()
+    MiscSection:Toggle({ Title = "hbe visualize", Value = false, Callback = function(v) HBE.Visualize = v hbeApplyVisual() end })
+    MiscSection:Slider({ Title = "drag cooldown", Value = { Min = 0, Max = 5, Default = HBE.DragCooldown }, Callback = function(v) HBE.DragCooldown = v end })
+    MiscSection:Button({ Title = "1.25x", Callback = function() HBE.SizeMultiplier = 1.25 if HBE.Enabled then hbeApply() end end })
+    MiscSection:Button({ Title = "1.50x", Callback = function() HBE.SizeMultiplier = 1.5  if HBE.Enabled then hbeApply() end end })
+    MiscSection:Button({ Title = "2.00x", Callback = function() HBE.SizeMultiplier = 2.0  if HBE.Enabled then hbeApply() end end })
+    MiscSection:Button({ Title = "fullbright", Callback = function()
         Lighting.Ambient = Color3.new(1,1,1)
         Lighting.OutdoorAmbient = Color3.new(1,1,1)
         Lighting.Brightness = 2; Lighting.ClockTime = 12
         local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
         if atmo then atmo:Destroy() end
     end })
-    MiscSection:CreateButton({ Name = "show chat", Callback = function()
+    MiscSection:Button({ Title = "show chat", Callback = function()
         pcall(function()
             local cfg = TextChatService:FindFirstChildOfClass("ChatWindowConfiguration")
             local inp = TextChatService:FindFirstChildOfClass("ChatInputBarConfiguration")
@@ -1983,12 +1995,12 @@ local uiOk, uiErr = pcall(function()
             if inp then inp.Enabled = true end
         end)
     end })
-    MiscSection:CreateButton({ Name = "reset character", Callback = function()
+    MiscSection:Button({ Title = "reset character", Callback = function()
         local char = lp.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if hum then hum.Health = 0 end
     end })
-    MiscSection:CreateButton({ Name = "anti lag", Callback = function()
+    MiscSection:Button({ Title = "anti lag", Callback = function()
         task.spawn(function()
             pcall(function()
                 loadstring(game:HttpGet("https://raw.githubusercontent.com/zxcursedsocute/Forsaken-Script/refs/heads/main/anti%20lag%20test"))()
@@ -2002,7 +2014,7 @@ if not uiOk then
     return
 end
 
-Library:Notify({
+WindUI:Notify({
     Title = "hunter",
     Content = "loaded",
     Duration = 4,
