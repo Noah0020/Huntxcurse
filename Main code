@@ -2114,4 +2114,113 @@ StabSection:CreateSlider({
     Callback = function(v) STAB.TeleportDelay = v end,
 })
 StabSection:CreateSlider({
-    Title = "follow duration
+    Title = "follow duration", Range = {0.1, 2}, Increment = 0.05, Suffix = "",
+    Default = STAB.FollowDuration,
+    Callback = function(v) STAB.FollowDuration = v end,
+})
+StabSection:CreateButton({
+    Title = "stab now",
+    Callback = function() task.spawn(stabActivate) end,
+})
+
+-- MISC
+local MiscSection = MiscTab:CreateSection("misc")
+MiscSection:CreateToggle({
+    Title = "auto qte", Default = false,
+    Callback = function(v) AZ.AutoQTE = v if v then azHookQTE() end end,
+})
+MiscSection:CreateToggle({
+    Title = "inf qte", Default = false,
+    Callback = function(v) AZ.InfiniteQTE = v if v then azHookQTE() end end,
+})
+MiscSection:CreateToggle({
+    Title = "auto generator", Default = false,
+    Callback = function(v) AUTOGEN.Enabled = v end,
+})
+MiscSection:CreateSlider({
+    Title = "gen range", Range = {5, 30}, Increment = 1, Suffix = "",
+    Default = AUTOGEN.MaxDistance,
+    Callback = function(v) AUTOGEN.MaxDistance = v end,
+})
+MiscSection:CreateSlider({
+    Title = "gen interval", Range = {0.3, 5}, Increment = 0.1, Suffix = "",
+    Default = AUTOGEN.Cooldown,
+    Callback = function(v) AUTOGEN.Cooldown = v end,
+})
+MiscSection:CreateToggle({
+    Title = "hitbox expander", Default = false,
+    Callback = function(v) if v then hbeStart() else hbeStop() end end,
+})
+MiscSection:CreateDropdown({
+    Title = "hbe mode",
+    Values = {"Scale", "Velocity"},
+    Default = "Scale",
+    Callback = function(opt)
+        HBE.Mode = opt or "Scale"
+        if HBE.Enabled then hbeStop() hbeStart() end
+    end,
+})
+MiscSection:CreateSlider({
+    Title = "size multiplier", Range = {1, 5}, Increment = 0.1, Suffix = "x",
+    Default = HBE.SizeMultiplier,
+    Callback = function(v) HBE.SizeMultiplier = v if HBE.Enabled then hbeApply() end end,
+})
+MiscSection:CreateToggle({
+    Title = "hbe only on attack", Default = false,
+    Callback = function(v)
+        HBE.ApplyOnlyOnAttack = v
+        if HBE.Enabled and lp.Character then hbeDisconnectAll() hbeHookCharacter(lp.Character) end
+    end,
+})
+MiscSection:CreateToggle({
+    Title = "hbe visualize", Default = false,
+    Callback = function(v) HBE.Visualize = v hbeApplyVisual() end,
+})
+-- NEW: fix "cooldown set not stopping it" - real drag re-engage cooldown
+MiscSection:CreateSlider({
+    Title = "drag cooldown", Range = {0, 5}, Increment = 0.1, Suffix = "s",
+    Default = HBE.DragCooldown,
+    Callback = function(v) HBE.DragCooldown = v end,
+})
+MiscSection:CreateButton({ Title = "1.25x", Callback = function() HBE.SizeMultiplier = 1.25 if HBE.Enabled then hbeApply() end end })
+MiscSection:CreateButton({ Title = "1.50x", Callback = function() HBE.SizeMultiplier = 1.5  if HBE.Enabled then hbeApply() end end })
+MiscSection:CreateButton({ Title = "2.00x", Callback = function() HBE.SizeMultiplier = 2.0  if HBE.Enabled then hbeApply() end end })
+MiscSection:CreateButton({
+    Title = "fullbright",
+    Callback = function()
+        Lighting.Ambient = Color3.new(1,1,1)
+        Lighting.OutdoorAmbient = Color3.new(1,1,1)
+        Lighting.Brightness = 2; Lighting.ClockTime = 12
+        local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
+        if atmo then atmo:Destroy() end
+    end,
+})
+MiscSection:CreateButton({
+    Title = "show chat",
+    Callback = function()
+        pcall(function()
+            local cfg = TextChatService:FindFirstChildOfClass("ChatWindowConfiguration")
+            local inp = TextChatService:FindFirstChildOfClass("ChatInputBarConfiguration")
+            if cfg then cfg.Enabled = true end
+            if inp then inp.Enabled = true end
+        end)
+    end,
+})
+MiscSection:CreateButton({
+    Title = "reset character",
+    Callback = function()
+        local char = lp.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.Health = 0 end
+    end,
+})
+MiscSection:CreateButton({
+    Title = "anti lag",
+    Callback = function()
+        task.spawn(function()
+            pcall(function()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/zxcursedsocute/Forsaken-Script/refs/heads/main/anti%20lag%20test"))()
+            end)
+        end)
+    end,
+})
